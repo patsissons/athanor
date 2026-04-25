@@ -81,6 +81,9 @@ All examples below use `athanor` directly, but `npm run harness --` works identi
 ## Commands
 
 ```bash
+# scaffold tasks/ directory in a new project (interactive wizard)
+athanor init
+
 # plan + enrich + execute from a prompt
 athanor plan "Add a favorites feature"
 
@@ -89,6 +92,9 @@ athanor plan "Add favorites" --stop-after plan
 
 # plan + enrich tasks (skip execution)
 athanor plan "Add favorites" --stop-after tasks
+
+# plan with enrichment critic (adversarial task spec review)
+athanor plan "Add favorites" --enrichment-critic
 
 # resume from an existing plan (skip plan generation)
 athanor plan --from-plan plans/add-favorites.yaml
@@ -157,7 +163,8 @@ The agent is invoked at the `[agent]` nodes. Everything else is plain TypeScript
 
 | File                       | Purpose                                                           |
 | -------------------------- | ----------------------------------------------------------------- |
-| `src/cli.ts`               | Subcommand dispatch (`run`, `plan`, `clean`)                      |
+| `src/cli.ts`               | Commander-based CLI (`run`, `plan`, `clean`, `init`)              |
+| `src/init.ts`              | Interactive scaffolding wizard using @clack/prompts               |
 | `src/planner.ts`           | Three-phase plan pipeline (generate, enrich, execute)             |
 | `src/plan-prompt.ts`       | Prompt construction for plan generation and task enrichment       |
 | `src/orchestrator.ts`      | Single-task execution blueprint (worktree, agent, gates, retry)   |
