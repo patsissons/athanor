@@ -278,6 +278,11 @@ export function buildTaskEnrichmentPrompt(context: TaskEnrichmentContext): strin
   lines.push(
     "- Generate appropriate `allowedPaths` globs based on which files the task will likely touch.",
   );
+  lines.push(
+    "- If a task modifies a manifest file (e.g., package.json) and installs dependencies, " +
+      "include the corresponding lock file (e.g., package-lock.json, pnpm-lock.yaml, yarn.lock) " +
+      "in `allowedPaths` as well.",
+  );
   lines.push("- Write specific, testable acceptance criteria.");
   lines.push("- Use the default gates and settings unless overrides specify otherwise.");
   lines.push(

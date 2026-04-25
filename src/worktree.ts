@@ -104,7 +104,7 @@ export class Worktree {
    * the task spec).
    */
   async changedFiles(): Promise<string[]> {
-    const out = await this.git(["status", "--porcelain"], this.path);
+    const out = await this.git(["status", "--porcelain", "-uall"], this.path);
     return parseChangedFiles(out);
   }
 

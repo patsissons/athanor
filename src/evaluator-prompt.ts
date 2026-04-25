@@ -246,7 +246,11 @@ export function buildEnrichmentCriticPrompt(opts: {
   lines.push("## Review Checklist");
   lines.push("");
   lines.push("1. Are acceptance criteria concrete and testable (not vague)?");
-  lines.push("2. Do allowedPaths cover all files the task will realistically need?");
+  lines.push(
+    "2. Do allowedPaths cover all files the task will realistically need? " +
+      "(e.g., if a manifest like package.json is allowed and dependencies will be installed, " +
+      "the corresponding lock file must also be allowed.)",
+  );
   lines.push("3. Is there scope overlap with sibling tasks?");
   lines.push("4. Are there obvious missing acceptance criteria?");
   lines.push("5. Is the description detailed enough for a coding agent to implement?");

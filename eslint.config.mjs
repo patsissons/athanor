@@ -5,7 +5,14 @@ import { defineConfig } from "eslint/config";
 
 const eslintConfig = defineConfig([
   {
-    ignores: ["dist/**", "node_modules/**", "runs/**", "tmp/**", "test-fixtures/**"],
+    ignores: [
+      "dist/**",
+      "node_modules/**",
+      "runs/**",
+      "tmp/**",
+      "test-fixtures/**",
+      ".worktrees/**",
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended.map((config) => ({
