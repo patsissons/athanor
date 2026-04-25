@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { parse } from "yaml";
 import { z } from "zod";
 import { ValidationGateSchema } from "./task-spec.js";
+import { EvaluatorConfigSchema } from "./eval-spec.js";
 
 export const PlanTaskOverridesSchema = z.object({
   allowedPaths: z.array(z.string()).optional(),
@@ -11,6 +12,7 @@ export const PlanTaskOverridesSchema = z.object({
   guidelines: z.array(z.string()).optional(),
   maxAgentAttempts: z.number().int().min(1).max(3).optional(),
   model: z.enum(["sonnet", "opus", "haiku"]).optional(),
+  evaluator: EvaluatorConfigSchema.partial().optional(),
 });
 
 export const PlanTaskSchema = z.object({

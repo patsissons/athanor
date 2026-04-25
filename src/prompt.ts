@@ -43,12 +43,21 @@ export function buildPrompt(opts: {
   }
 
   if (priorFailure) {
+    const isEvalFeedback = priorFailure.startsWith("=== Evaluator Review ===");
     lines.push(`## Previous attempt failed (attempt ${attempt - 1})`);
-    lines.push("Gate output:");
-    lines.push("```");
-    lines.push(priorFailure);
-    lines.push("```");
-    lines.push("Fix the specific issue shown above. Do not rewrite unrelated code.");
+    if (isEvalFeedback) {
+      lines.push("An independent evaluator reviewed your implementation and found issues:");
+      lines.push("```");
+      lines.push(priorFailure);
+      lines.push("```");
+      lines.push("Address every issue listed above. The evaluator will review your next attempt.");
+    } else {
+      lines.push("Gate output:");
+      lines.push("```");
+      lines.push(priorFailure);
+      lines.push("```");
+      lines.push("Fix the specific issue shown above. Do not rewrite unrelated code.");
+    }
     lines.push("");
   }
 

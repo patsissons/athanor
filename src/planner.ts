@@ -4,10 +4,12 @@ import { parse, stringify } from "yaml";
 import { PlanSpecSchema, type PlanSpec, loadPlanSpec } from "./plan-spec.js";
 import { TaskSpecSchema, type TaskSpec, loadTaskSpec } from "./task-spec.js";
 import type { AppSpec } from "./app-spec.js";
+import type { EvalResult } from "./eval-spec.js";
 import { buildPlanPrompt, buildTaskEnrichmentPrompt } from "./plan-prompt.js";
 import { loadTaskDefaults, loadAppDefaults } from "./plan-defaults.js";
 import { extractYaml } from "./yaml-extract.js";
 import { invokeClaudeCode, type AgentResult } from "./agent.js";
+import { critiqueTaskSpec } from "./enrichment-critic.js";
 import { runTask } from "./orchestrator.js";
 import { log as defaultLog } from "./logger.js";
 import { harnessRoot as defaultHarnessRoot } from "./paths.js";
@@ -15,6 +17,12 @@ import type { RunTaskLogger } from "./orchestrator.js";
 
 export interface PlanDeps {
   invokeAgent(opts: { prompt: string; cwd: string; model: string }): Promise<AgentResult>;
+  critiqueTaskSpec(opts: {
+    taskSpec: TaskSpec;
+    plan: PlanSpec;
+    cwd: string;
+    model: string;
+  }): Promise<EvalResult>;
   loadAppDefaults(targetRepoRoot: string): Promise<Partial<AppSpec>>;
   loadTaskDefaults(targetRepoRoot: string): Promise<Partial<TaskSpec>>;
   writeFile(path: string, content: string): Promise<void>;
@@ -30,6 +38,8 @@ export interface PlanDeps {
 
 const defaultDeps: PlanDeps = {
   invokeAgent: invokeClaudeCode,
+  critiqueTaskSpec: (opts) =>
+    critiqueTaskSpec({ ...opts, deps: { invokeAgent: invokeClaudeCode } }),
   loadAppDefaults,
   loadTaskDefaults,
   writeFile: (path, content) => writeFile(path, content, "utf8"),
@@ -49,6 +59,7 @@ export async function runPlan(
     fromPlan?: string;
     stopAfter?: "plan" | "tasks";
     targetRepoRoot?: string;
+    enrichmentCritic?: { enabled: boolean; model?: string };
   },
   deps: Partial<PlanDeps> = {},
 ): Promise<boolean> {
@@ -155,6 +166,64 @@ export async function runPlan(
       d.log.error(`Task YAML validation failed for ${planTask.id}: ${String(err)}`);
       d.log.error(`Extracted YAML:\n${yamlText}`);
       return false;
+    }
+
+    // ─── Optional: Single-pass enrichment critic ─────────────────
+    if (opts.enrichmentCritic?.enabled) {
+      const criticModel = opts.enrichmentCritic.model ?? "opus";
+      d.log.info(`Running enrichment critic on ${planTask.id} (${criticModel})`);
+      const criticResult = await d.critiqueTaskSpec({
+        taskSpec,
+        plan,
+        cwd: d.targetRepoRoot,
+        model: criticModel,
+      });
+
+      if (!criticResult.passed) {
+        d.log.warn(`Critic rejected ${planTask.id}: ${criticResult.summary}`);
+        d.log.info(`Re-enriching ${planTask.id} with critic feedback`);
+
+        // Build a new enrichment prompt that includes the critic feedback
+        const criticFeedback = [
+          "A critic reviewed the initial task spec and found issues:",
+          criticResult.summary,
+          ...(criticResult.issues ?? []).map(
+            (issue) =>
+              `  [${issue.severity}] ${issue.criterion}: ${issue.description}` +
+              (issue.suggestion ? ` (fix: ${issue.suggestion})` : ""),
+          ),
+        ].join("\n");
+
+        const retryPrompt = buildTaskEnrichmentPrompt({
+          app: appDefaults,
+          plan,
+          targetTaskId: planTask.id,
+          taskDefaults,
+          assets: { "Critic Feedback": criticFeedback },
+        });
+
+        const retryResult = await d.invokeAgent({
+          prompt: retryPrompt,
+          cwd: d.targetRepoRoot,
+          model: "sonnet",
+        });
+
+        if (retryResult.success) {
+          try {
+            const retryYaml = extractYaml(retryResult.stdout);
+            taskSpec = TaskSpecSchema.parse(parse(retryYaml));
+            d.log.info(`Re-enrichment succeeded for ${planTask.id}`);
+          } catch (err) {
+            d.log.warn(
+              `Re-enrichment parse failed for ${planTask.id}, using original spec: ${String(err)}`,
+            );
+          }
+        } else {
+          d.log.warn(`Re-enrichment agent failed for ${planTask.id}, using original spec`);
+        }
+      } else {
+        d.log.info(`Critic approved ${planTask.id}`);
+      }
     }
 
     const taskPath = resolve(tasksDir, `${planTask.id}.yaml`);

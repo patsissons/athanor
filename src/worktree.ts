@@ -107,6 +107,14 @@ export class Worktree {
     const out = await this.git(["status", "--porcelain"], this.path);
     return parseChangedFiles(out);
   }
+
+  /**
+   * Unified diff of all changes in the worktree (staged + unstaged)
+   * relative to HEAD.
+   */
+  async diff(): Promise<string> {
+    return this.git(["diff", "HEAD"], this.path);
+  }
 }
 
 export function parseChangedPathsFromPorcelainLine(line: string): string[] {

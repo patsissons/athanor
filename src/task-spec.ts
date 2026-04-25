@@ -3,6 +3,7 @@ import { parse } from "yaml";
 import { z } from "zod";
 import { resolve } from "node:path";
 import { loadDefaults } from "./load-defaults.js";
+import { EvaluatorConfigSchema } from "./eval-spec.js";
 
 export const ValidationGateSchema = z.object({
   name: z.string(),
@@ -39,6 +40,9 @@ export const TaskSpecSchema = z.object({
 
   // Model
   model: z.enum(["sonnet", "opus", "haiku"]).default("sonnet"),
+
+  // Evaluator configuration (opt-in adversarial review after gates pass).
+  evaluator: EvaluatorConfigSchema.optional(),
 
   // Previously completed tasks summary (injected by the harness at runtime).
   completedTasks: z.string().optional(),

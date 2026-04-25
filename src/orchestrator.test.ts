@@ -53,6 +53,17 @@ function makeRuntime(opts: {
       output: string;
     }[]
   >;
+  evalResults?: Array<{
+    passed: boolean;
+    score?: number;
+    issues: Array<{
+      severity: string;
+      criterion: string;
+      description: string;
+      suggestion?: string;
+    }>;
+    summary: string;
+  }>;
   pushError?: Error;
   existingCompletedTasks?: string;
 }) {
@@ -70,6 +81,7 @@ function makeRuntime(opts: {
     path: "/tmp/wt",
     create: vi.fn().mockResolvedValue("/tmp/wt"),
     changedFiles: vi.fn().mockImplementation(async () => changedFiles.shift() ?? []),
+    diff: vi.fn().mockResolvedValue("diff --git a/src/page.tsx b/src/page.tsx\n+code"),
     commitAll: vi.fn().mockResolvedValue(undefined),
     push: vi.fn().mockImplementation(async () => {
       if (opts.pushError) {
@@ -77,6 +89,10 @@ function makeRuntime(opts: {
       }
     }),
   };
+
+  const evalResults = [
+    ...(opts.evalResults ?? [{ passed: true, issues: [], summary: "Approved." }]),
+  ];
 
   const appendedSummaries: { taskId: string; taskTitle: string; summary: string }[] = [];
 
@@ -91,6 +107,11 @@ function makeRuntime(opts: {
       .mockImplementation(
         async () =>
           gateResults.shift() ?? [{ name: "typecheck", passed: true, exitCode: 0, output: "" }],
+      ),
+    runEvaluator: vi
+      .fn()
+      .mockImplementation(
+        async () => evalResults.shift() ?? { passed: true, issues: [], summary: "Approved." },
       ),
     runCommand: vi.fn().mockImplementation(async (_command, args) => {
       if (args[0] === "install") {
@@ -282,5 +303,117 @@ describe("runTask", () => {
     expect(ok).toBe(true);
     const firstPrompt = vi.mocked(runtime.deps.invokeAgent).mock.calls[0]?.[0].prompt;
     expect(firstPrompt).not.toContain("## Previously completed tasks");
+  });
+
+  it("skips evaluator when not configured", async () => {
+    const runtime = makeRuntime({});
+
+    const ok = await runTask(makeTask(), taskOpts, runtime.deps);
+
+    expect(ok).toBe(true);
+    expect(runtime.deps.runEvaluator).not.toHaveBeenCalled();
+  });
+
+  it("runs evaluator after gates pass when enabled", async () => {
+    const runtime = makeRuntime({
+      evalResults: [{ passed: true, score: 90, issues: [], summary: "Approved." }],
+    });
+
+    const task = makeTask({
+      evaluator: { enabled: true, model: "opus" },
+    });
+    const ok = await runTask(task, taskOpts, runtime.deps);
+
+    expect(ok).toBe(true);
+    expect(runtime.deps.runEvaluator).toHaveBeenCalledTimes(1);
+    expect(runtime.worktree.commitAll).toHaveBeenCalled();
+  });
+
+  it("retries with evaluator feedback when evaluator rejects", async () => {
+    const runtime = makeRuntime({
+      evalResults: [
+        {
+          passed: false,
+          score: 30,
+          issues: [
+            {
+              severity: "critical",
+              criterion: "Route renders",
+              description: "Route handler is stubbed",
+              suggestion: "Implement the handler",
+            },
+          ],
+          summary: "Implementation is incomplete.",
+        },
+        { passed: true, score: 85, issues: [], summary: "Now looks good." },
+      ],
+      gateResults: [
+        [{ name: "typecheck", passed: true, exitCode: 0, output: "" }],
+        [{ name: "typecheck", passed: true, exitCode: 0, output: "" }],
+      ],
+      agentResults: [
+        { success: true, stderr: "" },
+        { success: true, stderr: "" },
+      ],
+    });
+
+    const task = makeTask({
+      evaluator: { enabled: true, model: "opus" },
+    });
+    const ok = await runTask(task, taskOpts, runtime.deps);
+
+    expect(ok).toBe(true);
+    expect(runtime.deps.runEvaluator).toHaveBeenCalledTimes(2);
+    expect(runtime.deps.invokeAgent).toHaveBeenCalledTimes(2);
+    const secondPrompt = vi.mocked(runtime.deps.invokeAgent).mock.calls[1]?.[0].prompt;
+    expect(secondPrompt).toContain("Evaluator Review");
+    expect(secondPrompt).toContain("Route handler is stubbed");
+  });
+
+  it("does not run evaluator when gates fail", async () => {
+    const runtime = makeRuntime({
+      gateResults: [
+        [{ name: "typecheck", passed: false, exitCode: 1, output: "bad types" }],
+        [{ name: "typecheck", passed: true, exitCode: 0, output: "" }],
+      ],
+      agentResults: [
+        { success: true, stderr: "" },
+        { success: true, stderr: "" },
+      ],
+    });
+
+    const task = makeTask({
+      evaluator: { enabled: true, model: "opus" },
+    });
+    const ok = await runTask(task, taskOpts, runtime.deps);
+
+    expect(ok).toBe(true);
+    // Evaluator should only run on the second attempt (when gates pass)
+    expect(runtime.deps.runEvaluator).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails after exhausting attempts with evaluator rejections", async () => {
+    const runtime = makeRuntime({
+      evalResults: [
+        { passed: false, issues: [], summary: "Not good enough." },
+        { passed: false, issues: [], summary: "Still not good enough." },
+      ],
+      gateResults: [
+        [{ name: "typecheck", passed: true, exitCode: 0, output: "" }],
+        [{ name: "typecheck", passed: true, exitCode: 0, output: "" }],
+      ],
+      agentResults: [
+        { success: true, stderr: "" },
+        { success: true, stderr: "" },
+      ],
+    });
+
+    const task = makeTask({
+      evaluator: { enabled: true, model: "opus" },
+    });
+    const ok = await runTask(task, taskOpts, runtime.deps);
+
+    expect(ok).toBe(false);
+    expect(runtime.worktree.commitAll).not.toHaveBeenCalled();
   });
 });

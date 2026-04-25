@@ -57,4 +57,22 @@ describe("buildPrompt", () => {
 
     expect(prompt).toContain("<task-summary>");
   });
+
+  it("distinguishes evaluator feedback from gate failures", () => {
+    const evalFeedback =
+      "=== Evaluator Review ===\nIncomplete implementation.\n\nIssues found:\n  [critical] Route renders\n    Route is stubbed";
+    const prompt = buildPrompt({ task, attempt: 2, priorFailure: evalFeedback });
+
+    expect(prompt).toContain("independent evaluator reviewed your implementation");
+    expect(prompt).toContain("evaluator will review your next attempt");
+    expect(prompt).not.toContain("Gate output:");
+  });
+
+  it("uses gate output framing for non-evaluator failures", () => {
+    const gateFailure = "=== typecheck (exit 1) ===\nbad types";
+    const prompt = buildPrompt({ task, attempt: 2, priorFailure: gateFailure });
+
+    expect(prompt).toContain("Gate output:");
+    expect(prompt).not.toContain("independent evaluator");
+  });
 });

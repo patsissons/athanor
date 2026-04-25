@@ -43,6 +43,7 @@ function makeDeps(overrides: Partial<PlanDeps> = {}): PlanDeps {
   const { logger } = makeLogger();
   return {
     invokeAgent: vi.fn(agentReturning(stringify(samplePlan))),
+    critiqueTaskSpec: vi.fn(async () => ({ passed: true, issues: [], summary: "Approved." })),
     loadAppDefaults: vi.fn(async () => ({})),
     loadTaskDefaults: vi.fn(async () => ({})),
     writeFile: vi.fn(async () => {}),
@@ -240,6 +241,122 @@ describe("runPlan", () => {
       await runPlan({ prompt: "test", stopAfter: "tasks" }, deps);
 
       expect(deps.runTask).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Enrichment Critic", () => {
+    it("skips critic when not enabled", async () => {
+      let callCount = 0;
+      const deps = makeDeps({
+        invokeAgent: vi.fn(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return { success: true, stdout: stringify(samplePlan), stderr: "", parsed: null };
+          }
+          return { success: true, stdout: stringify(sampleTask), stderr: "", parsed: null };
+        }),
+      });
+
+      await runPlan({ prompt: "test", stopAfter: "tasks" }, deps);
+
+      expect(deps.critiqueTaskSpec).not.toHaveBeenCalled();
+    });
+
+    it("runs critic when enabled and approves good specs", async () => {
+      let callCount = 0;
+      const deps = makeDeps({
+        invokeAgent: vi.fn(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return { success: true, stdout: stringify(samplePlan), stderr: "", parsed: null };
+          }
+          return { success: true, stdout: stringify(sampleTask), stderr: "", parsed: null };
+        }),
+      });
+
+      await runPlan(
+        { prompt: "test", stopAfter: "tasks", enrichmentCritic: { enabled: true } },
+        deps,
+      );
+
+      // 2 tasks in the plan = 2 critic calls
+      expect(deps.critiqueTaskSpec).toHaveBeenCalledTimes(2);
+    });
+
+    it("re-enriches task when critic rejects", async () => {
+      let callCount = 0;
+      const deps = makeDeps({
+        invokeAgent: vi.fn(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return { success: true, stdout: stringify(samplePlan), stderr: "", parsed: null };
+          }
+          return { success: true, stdout: stringify(sampleTask), stderr: "", parsed: null };
+        }),
+        critiqueTaskSpec: vi
+          .fn()
+          .mockResolvedValueOnce({
+            passed: false,
+            issues: [
+              {
+                severity: "critical",
+                criterion: "Acceptance criteria quality",
+                description: "Too vague",
+              },
+            ],
+            summary: "Needs improvement.",
+          })
+          .mockResolvedValue({ passed: true, issues: [], summary: "Approved." }),
+      });
+
+      const ok = await runPlan(
+        { prompt: "test", stopAfter: "tasks", enrichmentCritic: { enabled: true } },
+        deps,
+      );
+
+      expect(ok).toBe(true);
+      // 1 plan + 2 enrichments + 1 re-enrichment (for the rejected task)
+      expect(deps.invokeAgent).toHaveBeenCalledTimes(4);
+    });
+
+    it("uses original spec when re-enrichment fails", async () => {
+      let callCount = 0;
+      const deps = makeDeps({
+        invokeAgent: vi.fn(async () => {
+          callCount++;
+          if (callCount === 1) {
+            // Plan generation
+            return { success: true, stdout: stringify(samplePlan), stderr: "", parsed: null };
+          }
+          if (callCount === 2) {
+            // First enrichment of task 1 succeeds
+            return { success: true, stdout: stringify(sampleTask), stderr: "", parsed: null };
+          }
+          if (callCount === 3) {
+            // Re-enrichment of task 1 fails
+            return { success: false, stdout: "", stderr: "agent died", parsed: null };
+          }
+          // Enrichment of task 2 succeeds
+          return { success: true, stdout: stringify(sampleTask), stderr: "", parsed: null };
+        }),
+        critiqueTaskSpec: vi
+          .fn()
+          .mockResolvedValueOnce({
+            passed: false,
+            issues: [],
+            summary: "Needs work.",
+          })
+          .mockResolvedValue({ passed: true, issues: [], summary: "OK." }),
+      });
+
+      const ok = await runPlan(
+        { prompt: "test", stopAfter: "tasks", enrichmentCritic: { enabled: true } },
+        deps,
+      );
+
+      expect(ok).toBe(true);
+      // Task file should still be written (with original spec)
+      expect(deps.writeFile).toHaveBeenCalled();
     });
   });
 });

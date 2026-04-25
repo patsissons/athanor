@@ -2,9 +2,11 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { execa } from "execa";
 import type { TaskSpec } from "./task-spec.js";
+import type { EvalResult, EvaluatorConfig } from "./eval-spec.js";
 import { Worktree, makeRunId } from "./worktree.js";
 import { runAllGates, summarize, type GateResult } from "./gates.js";
 import { invokeClaudeCode } from "./agent.js";
+import { runEvaluator, formatEvalFeedback } from "./evaluator.js";
 import { buildPrompt } from "./prompt.js";
 import { log } from "./logger.js";
 import { evaluatePathPolicy } from "./path-policy.js";
@@ -14,6 +16,7 @@ export interface WorktreeLike {
   readonly path: string;
   create(): Promise<string>;
   changedFiles(): Promise<string[]>;
+  diff(): Promise<string>;
   commitAll(message: string): Promise<void>;
   push(): Promise<void>;
 }
@@ -44,6 +47,12 @@ export interface RunTaskDeps {
     model: string;
   }): Promise<{ success: boolean; stderr: string; summary?: string }>;
   runAllGates(gates: TaskSpec["gates"], cwd: string): Promise<GateResult[]>;
+  runEvaluator(opts: {
+    task: TaskSpec;
+    diff: string;
+    evaluator: EvaluatorConfig;
+    cwd: string;
+  }): Promise<EvalResult>;
   runCommand(
     command: string,
     args: string[],
@@ -85,11 +94,24 @@ async function runSubprocess(
   };
 }
 
+async function defaultRunEvaluator(opts: {
+  task: TaskSpec;
+  diff: string;
+  evaluator: EvaluatorConfig;
+  cwd: string;
+}): Promise<EvalResult> {
+  return runEvaluator({
+    ...opts,
+    deps: { invokeAgent: invokeClaudeCode },
+  });
+}
+
 const defaultDeps: RunTaskDeps = {
   createWorktree: createDefaultWorktree,
   makeRunId,
   invokeAgent: invokeClaudeCode,
   runAllGates,
+  runEvaluator: defaultRunEvaluator,
   runCommand: runSubprocess,
   loadCompletedTasks,
   appendCompletedTask,
@@ -219,29 +241,52 @@ export async function runTask(
     results.forEach((r) => runtime.log.debug(summarize(r)));
 
     const failed = results.filter((r) => !r.passed);
-    if (failed.length === 0) {
-      runtime.log.info("All gates passed");
-
-      // ─── DETERMINISTIC NODE: record completed task summary ──────
-      const summary = lastSummary ?? `Completed task: ${task.title}`;
-      await runtime.appendCompletedTask(opts.targetRepoRoot, task.id, task.title, summary);
-      runtime.log.debug("Updated completed-tasks.md");
-
-      // ─── DETERMINISTIC NODE: commit + push ─────────────────────
-      await wt.commitAll(`${task.title}\n\nTask: ${task.id}`);
-      try {
-        await wt.push();
-        runtime.log.info(`Pushed branch ${wt.branch}`);
-      } catch (e) {
-        runtime.log.warn(`Push failed (maybe no remote configured): ${String(e)}`);
-      }
-      return true;
+    if (failed.length > 0) {
+      // Focused failure message for the next attempt
+      priorFailure = failed
+        .map((r) => `=== ${r.name} (exit ${r.exitCode}) ===\n${r.output}`)
+        .join("\n\n");
+      continue;
     }
 
-    // Focused failure message for the next attempt
-    priorFailure = failed
-      .map((r) => `=== ${r.name} (exit ${r.exitCode}) ===\n${r.output}`)
-      .join("\n\n");
+    runtime.log.info("All gates passed");
+
+    // ─── AGENT NODE: evaluator (optional) ────────────────────────
+    if (task.evaluator?.enabled) {
+      runtime.log.info(`Running evaluator (${task.evaluator.model})`);
+      const diffText = await wt.diff();
+      const evalResult = await runtime.runEvaluator({
+        task: taskWithContext,
+        diff: diffText,
+        evaluator: task.evaluator,
+        cwd: wt.path,
+      });
+
+      if (!evalResult.passed) {
+        runtime.log.warn(
+          `Evaluator rejected (score: ${evalResult.score ?? "N/A"}): ${evalResult.summary}`,
+        );
+        priorFailure = formatEvalFeedback(evalResult);
+        continue;
+      }
+
+      runtime.log.info(`Evaluator approved (score: ${evalResult.score ?? "N/A"})`);
+    }
+
+    // ─── DETERMINISTIC NODE: record completed task summary ──────
+    const summary = lastSummary ?? `Completed task: ${task.title}`;
+    await runtime.appendCompletedTask(opts.targetRepoRoot, task.id, task.title, summary);
+    runtime.log.debug("Updated completed-tasks.md");
+
+    // ─── DETERMINISTIC NODE: commit + push ─────────────────────
+    await wt.commitAll(`${task.title}\n\nTask: ${task.id}`);
+    try {
+      await wt.push();
+      runtime.log.info(`Pushed branch ${wt.branch}`);
+    } catch (e) {
+      runtime.log.warn(`Push failed (maybe no remote configured): ${String(e)}`);
+    }
+    return true;
   }
 
   runtime.log.warn(
