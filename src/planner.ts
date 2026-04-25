@@ -71,6 +71,7 @@ export async function runPlan(
   };
 
   const appDefaults = await d.loadAppDefaults(d.targetRepoRoot);
+  const taskDefaults = await d.loadTaskDefaults(d.targetRepoRoot);
 
   let plan: PlanSpec;
 
@@ -85,7 +86,7 @@ export async function runPlan(
     }
 
     d.log.info("Phase 1: Generating plan with Opus");
-    const prompt = buildPlanPrompt(opts.prompt, appDefaults);
+    const prompt = buildPlanPrompt(opts.prompt, appDefaults, taskDefaults);
     const result = await d.invokeAgent({
       prompt,
       cwd: d.targetRepoRoot,
@@ -129,7 +130,6 @@ export async function runPlan(
 
   // ─── Phase 2: Task Generation ──────────────────────────────────
   d.log.info("Phase 2: Generating task specs with Sonnet");
-  const taskDefaults = await d.loadTaskDefaults(d.targetRepoRoot);
   const tasksDir = resolve(d.targetRepoRoot, ".athanor", "tasks", plan.id);
   await d.mkdir(tasksDir);
 

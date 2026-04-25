@@ -108,6 +108,29 @@ describe("buildPlanPrompt", () => {
     });
     expect(prompt).not.toContain("Do NOT include devServer");
   });
+
+  it("includes forbidden paths guidance when taskDefaults has forbiddenPaths", () => {
+    const prompt = buildPlanPrompt(
+      "Build something",
+      {},
+      {
+        forbiddenPaths: ["package.json", "package-lock.json"],
+      },
+    );
+    expect(prompt).toContain("forbidden by default");
+    expect(prompt).toContain("package.json");
+    expect(prompt).toContain("forbiddenPaths: []");
+  });
+
+  it("omits forbidden paths guidance when taskDefaults has no forbiddenPaths", () => {
+    const prompt = buildPlanPrompt("Build something", {}, {});
+    expect(prompt).not.toContain("forbidden by default");
+  });
+
+  it("omits forbidden paths guidance when taskDefaults is undefined", () => {
+    const prompt = buildPlanPrompt("Build something", {});
+    expect(prompt).not.toContain("forbidden by default");
+  });
 });
 
 describe("buildTaskEnrichmentPrompt", () => {

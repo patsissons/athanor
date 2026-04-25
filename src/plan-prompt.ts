@@ -56,7 +56,11 @@ model: sonnet
 #   mode: diff-review       # or "interactive"
 #   model: opus`;
 
-export function buildPlanPrompt(userPrompt: string, app?: Partial<AppSpec>): string {
+export function buildPlanPrompt(
+  userPrompt: string,
+  app?: Partial<AppSpec>,
+  taskDefaults?: Partial<TaskSpec>,
+): string {
   const lines: string[] = [];
 
   lines.push("# Objective");
@@ -122,6 +126,15 @@ export function buildPlanPrompt(userPrompt: string, app?: Partial<AppSpec>): str
       "needs Opus instead of Sonnet, or must be restricted to specific file paths).",
   );
   lines.push("- Order tasks logically — foundational tasks first, dependent tasks after.");
+
+  if (taskDefaults?.forbiddenPaths?.length) {
+    lines.push(
+      `- The following paths are forbidden by default: ${JSON.stringify(taskDefaults.forbiddenPaths)}. ` +
+        "If a task must modify any of these files (e.g., adding a dependency to package.json), " +
+        "include `forbiddenPaths: []` (or a narrower list) in that task's overrides so it is " +
+        "not blocked at runtime.",
+    );
+  }
 
   if (app?.devServer) {
     lines.push(
