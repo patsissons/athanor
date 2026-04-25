@@ -14,7 +14,8 @@ import { critiqueTaskSpec } from "./enrichment-critic.js";
 import { runTask } from "./orchestrator.js";
 import { log as defaultLog } from "./logger.js";
 import { harnessRoot as defaultHarnessRoot } from "./paths.js";
-import type { RunTaskLogger } from "./orchestrator.js";
+import type { RunTaskLogger, RunTaskResult } from "./orchestrator.js";
+import { execa } from "execa";
 
 export interface PlanDeps {
   invokeAgent(opts: { prompt: string; cwd: string; model: string }): Promise<AgentResult>;
@@ -31,10 +32,26 @@ export interface PlanDeps {
   readdir(path: string): Promise<string[]>;
   loadPlanSpec(path: string): Promise<PlanSpec>;
   loadTaskSpec(path: string, targetRepoRoot?: string): Promise<TaskSpec>;
-  runTask(task: TaskSpec, opts: { targetRepoRoot: string; harnessRoot: string }): Promise<boolean>;
+  runTask(
+    task: TaskSpec,
+    opts: { targetRepoRoot: string; harnessRoot: string; baseBranch?: string; push?: boolean },
+  ): Promise<RunTaskResult>;
+  fastForwardDefaultBranch(targetRepoRoot: string, branch: string): Promise<boolean>;
   log: RunTaskLogger;
   harnessRoot: string;
   targetRepoRoot: string;
+}
+
+async function defaultFastForwardDefaultBranch(
+  targetRepoRoot: string,
+  branch: string,
+): Promise<boolean> {
+  try {
+    await execa("git", ["merge", "--ff-only", branch], { cwd: targetRepoRoot });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const defaultDeps: PlanDeps = {
@@ -49,6 +66,7 @@ const defaultDeps: PlanDeps = {
   loadPlanSpec,
   loadTaskSpec,
   runTask,
+  fastForwardDefaultBranch: defaultFastForwardDefaultBranch,
   log: defaultLog,
   harnessRoot: defaultHarnessRoot,
   targetRepoRoot: process.cwd(),
@@ -59,6 +77,7 @@ export async function runPlan(
     prompt?: string;
     fromPlan?: string;
     stopAfter?: "plan" | "tasks";
+    startAt?: string;
     targetRepoRoot?: string;
     enrichmentCritic?: { enabled: boolean; model?: string };
   },
@@ -258,23 +277,53 @@ export async function runPlan(
   const taskFiles = await d.readdir(tasksDir);
   const yamlFiles = taskFiles.filter((f) => f.endsWith(".yaml")).sort();
 
-  let allPassed = true;
-  for (const file of yamlFiles) {
+  // Apply --start-at: skip tasks before the specified ID
+  let startIndex = 0;
+  if (opts.startAt) {
+    const idx = yamlFiles.findIndex((f) => f.replace(/\.yaml$/, "") === opts.startAt);
+    if (idx === -1) {
+      d.log.error(`--start-at task "${opts.startAt}" not found in ${tasksDir}`);
+      return false;
+    }
+    startIndex = idx;
+    d.log.info(`Resuming from task: ${opts.startAt} (skipping ${startIndex} task(s))`);
+  }
+
+  let baseBranch: string | undefined;
+
+  for (let i = startIndex; i < yamlFiles.length; i++) {
+    const file = yamlFiles[i];
     const taskPath = resolve(tasksDir, file);
     let task = await d.loadTaskSpec(taskPath, d.targetRepoRoot);
     task = mergeAppDevServer(task, appDefaults);
     d.log.info(`Running task: ${task.id}`);
-    const ok = await d.runTask(task, {
+
+    const result = await d.runTask(task, {
       targetRepoRoot: d.targetRepoRoot,
       harnessRoot: d.harnessRoot,
+      baseBranch,
+      push: false,
     });
-    if (ok) {
-      d.log.info(`Task ${task.id} completed successfully`);
-    } else {
-      d.log.error(`Task ${task.id} failed`);
-      allPassed = false;
+
+    if (!result.success) {
+      d.log.error(`Task ${task.id} failed — halting plan execution`);
+      return false;
+    }
+
+    d.log.info(`Task ${task.id} completed successfully`);
+
+    // Chain: next task branches from this task's commit
+    baseBranch = result.branch;
+
+    // Best-effort: fast-forward the default branch so --start-at works naturally
+    const ffOk = await d.fastForwardDefaultBranch(d.targetRepoRoot, result.branch);
+    if (!ffOk) {
+      d.log.warn(
+        `Could not fast-forward default branch to ${result.branch}. ` +
+          `The next task will still branch correctly from the previous task's commit.`,
+      );
     }
   }
 
-  return allPassed;
+  return true;
 }

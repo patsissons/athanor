@@ -44,8 +44,8 @@ program
     const runDir = resolve(harnessRoot, "runs", task.id);
     const logFile = await setupLogging(runDir);
     log.info(`Logging to ${logFile}`);
-    const ok = await runTask(task, { targetRepoRoot, harnessRoot });
-    process.exit(ok ? 0 : 1);
+    const { success } = await runTask(task, { targetRepoRoot, harnessRoot });
+    process.exit(success ? 0 : 1);
   });
 
 // ── plan ─────────────────────────────────────────────────────────
@@ -55,11 +55,12 @@ program
   .argument("[prompt]", "The planning prompt")
   .option("--stop-after <phase>", "Stop after phase (plan or tasks)")
   .option("--from-plan <path>", "Resume from existing plan file")
+  .option("--start-at <task-id>", "Resume execution at a specific task")
   .option("--enrichment-critic", "Enable enrichment critic for task specs")
   .action(
     async (
       prompt: string | undefined,
-      opts: { stopAfter?: string; fromPlan?: string; enrichmentCritic?: boolean },
+      opts: { stopAfter?: string; fromPlan?: string; startAt?: string; enrichmentCritic?: boolean },
       cmd: Command,
     ) => {
       if (cmd.optsWithGlobals().debug) enableDebug();
@@ -71,6 +72,11 @@ program
 
       if (!prompt && !opts.fromPlan) {
         console.error("Either a prompt or --from-plan is required");
+        process.exit(1);
+      }
+
+      if (opts.startAt && !opts.fromPlan) {
+        console.error("--start-at requires --from-plan");
         process.exit(1);
       }
 
@@ -91,6 +97,7 @@ program
         prompt,
         fromPlan: opts.fromPlan ? resolveTaskFilePath(opts.fromPlan, targetRepoRoot) : undefined,
         stopAfter: opts.stopAfter as "plan" | "tasks" | undefined,
+        startAt: opts.startAt,
         targetRepoRoot,
         enrichmentCritic: opts.enrichmentCritic ? { enabled: true } : undefined,
       });

@@ -33,12 +33,18 @@ export interface RunTaskLogger {
   debug(message: string): void;
 }
 
+export interface RunTaskResult {
+  success: boolean;
+  branch: string;
+}
+
 export interface RunTaskDeps {
   createWorktree(
     targetRepoRoot: string,
     harnessRoot: string,
     taskId: string,
     runId: string,
+    baseBranch?: string,
   ): WorktreeLike;
   makeRunId(): string;
   invokeAgent(opts: {
@@ -73,8 +79,9 @@ function createDefaultWorktree(
   harnessRoot: string,
   taskId: string,
   runId: string,
+  baseBranch?: string,
 ): WorktreeLike {
-  return new Worktree(targetRepoRoot, harnessRoot, taskId, runId);
+  return new Worktree(targetRepoRoot, harnessRoot, taskId, runId, baseBranch);
 }
 
 async function runSubprocess(
@@ -151,9 +158,9 @@ async function appendCompletedTask(
 
 export async function runTask(
   task: TaskSpec,
-  opts: { targetRepoRoot: string; harnessRoot: string },
+  opts: { targetRepoRoot: string; harnessRoot: string; baseBranch?: string; push?: boolean },
   deps: Partial<RunTaskDeps> = {},
-): Promise<boolean> {
+): Promise<RunTaskResult> {
   /*
    * Blueprint:
    *   [deterministic] create worktree from main
@@ -176,6 +183,7 @@ export async function runTask(
     opts.harnessRoot,
     task.id,
     runtime.makeRunId(),
+    opts.baseBranch,
   );
   await wt.create();
   runtime.log.debug(`Worktree created at ${wt.path} on branch ${wt.branch}`);
@@ -188,7 +196,7 @@ export async function runTask(
   });
   if (installResult.exitCode !== 0) {
     runtime.log.error(`npm install failed:\n${installResult.stderr}`);
-    return false;
+    return { success: false, branch: wt.branch };
   }
   runtime.log.debug("Dependencies installed");
 
@@ -206,7 +214,7 @@ export async function runTask(
     });
     if (!agentResult.success) {
       runtime.log.error(`Agent invocation failed: ${agentResult.stderr}`);
-      return false;
+      return { success: false, branch: wt.branch };
     }
 
     lastSummary = agentResult.summary;
@@ -253,7 +261,7 @@ export async function runTask(
           "Evaluator mode is 'interactive' but no devServer config found. " +
             "Set devServer in the task spec or in .athanor/app.yaml.",
         );
-        return false;
+        return { success: false, branch: wt.branch };
       }
       runtime.log.info(`Running evaluator (${task.evaluator.model})`);
       const diffText = await wt.diff();
@@ -282,18 +290,20 @@ export async function runTask(
 
     // ─── DETERMINISTIC NODE: commit + push ─────────────────────
     await wt.commitAll(`${task.title}\n\nTask: ${task.id}`);
-    try {
-      await wt.push();
-      runtime.log.info(`Pushed branch ${wt.branch}`);
-    } catch (e) {
-      runtime.log.warn(`Push failed (maybe no remote configured): ${String(e)}`);
+    if (opts.push !== false) {
+      try {
+        await wt.push();
+        runtime.log.info(`Pushed branch ${wt.branch}`);
+      } catch (e) {
+        runtime.log.warn(`Push failed (maybe no remote configured): ${String(e)}`);
+      }
     }
-    return true;
+    return { success: true, branch: wt.branch };
   }
 
   runtime.log.warn(
     `Task ${task.id} did not pass after ${task.maxAgentAttempts} attempts. ` +
       `Branch ${wt.branch} left for human review at ${wt.path}.`,
   );
-  return false;
+  return { success: false, branch: wt.branch };
 }

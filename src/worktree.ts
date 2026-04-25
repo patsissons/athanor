@@ -10,11 +10,20 @@ export class Worktree {
   readonly branch: string;
   readonly path: string; // absolute path to the worktree root
 
-  constructor(targetRepoRoot: string, harnessRoot: string, taskId: string, runId: string) {
+  private readonly baseBranch?: string;
+
+  constructor(
+    targetRepoRoot: string,
+    harnessRoot: string,
+    taskId: string,
+    runId: string,
+    baseBranch?: string,
+  ) {
     this.targetRepoRoot = resolve(targetRepoRoot);
     this.harnessRoot = resolve(harnessRoot);
     this.taskId = taskId;
     this.runId = runId;
+    this.baseBranch = baseBranch;
     this.branch = `athanor/${taskId}/${runId}`;
     // Worktrees live at the harness root under .worktrees/.
     this.path = resolve(this.harnessRoot, `.worktrees/${taskId}-${runId}`);
@@ -34,21 +43,23 @@ export class Worktree {
   async create(): Promise<string> {
     await mkdir(dirname(this.path), { recursive: true });
 
-    const defaultBranch = await this.detectDefaultBranch();
+    const startPoint = this.baseBranch ?? (await this.detectDefaultBranch());
 
-    // Fetch the latest default branch from origin (best-effort).
+    // Fetch the latest branch from origin (best-effort).
+    // When baseBranch is an athanor task branch it won't exist on origin, so
+    // fetch is expected to fail — that's fine.
     try {
-      await this.git(["fetch", "origin", defaultBranch]);
+      await this.git(["fetch", "origin", startPoint]);
     } catch {
       // No remote or fetch failed — local-only is fine.
     }
 
-    // Prefer the local default branch so unpushed commits are included.
+    // Prefer the local branch so unpushed commits are included.
     // Fall back to origin's copy when the local branch doesn't exist.
     try {
-      await this.git(["worktree", "add", "-b", this.branch, this.path, defaultBranch]);
+      await this.git(["worktree", "add", "-b", this.branch, this.path, startPoint]);
     } catch {
-      await this.git(["worktree", "add", "-b", this.branch, this.path, `origin/${defaultBranch}`]);
+      await this.git(["worktree", "add", "-b", this.branch, this.path, `origin/${startPoint}`]);
     }
 
     return this.path;

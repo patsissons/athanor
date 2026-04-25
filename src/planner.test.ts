@@ -51,7 +51,8 @@ function makeDeps(overrides: Partial<PlanDeps> = {}): PlanDeps {
     readdir: vi.fn(async () => []),
     loadPlanSpec: vi.fn(async () => samplePlan),
     loadTaskSpec: vi.fn(async () => sampleTask),
-    runTask: vi.fn(async () => true),
+    runTask: vi.fn(async () => ({ success: true, branch: "athanor/task/run" })),
+    fastForwardDefaultBranch: vi.fn(async () => true),
     log: logger,
     harnessRoot: "/harness",
     targetRepoRoot: "/repo",
@@ -227,15 +228,109 @@ describe("runPlan", () => {
       expect(deps.runTask).toHaveBeenCalledTimes(2);
     });
 
-    it("returns false if any task fails", async () => {
+    it("halts on first task failure", async () => {
       const deps = makeDeps({
-        readdir: vi.fn(async () => ["task-1.yaml"]),
-        runTask: vi.fn(async () => false),
+        invokeAgent: vi.fn(agentReturning(stringify(sampleTask))),
+        readdir: vi.fn(async () => ["task-1.yaml", "task-2.yaml"]),
+        runTask: vi.fn(async () => ({ success: false, branch: "athanor/task/run" })),
       });
 
       const ok = await runPlan({ fromPlan: "plans/test.yaml" }, deps);
 
       expect(ok).toBe(false);
+      // Should stop after first failure, not continue to second task
+      expect(deps.runTask).toHaveBeenCalledTimes(1);
+    });
+
+    it("chains baseBranch from previous task", async () => {
+      let callCount = 0;
+      const deps = makeDeps({
+        invokeAgent: vi.fn(agentReturning(stringify(sampleTask))),
+        readdir: vi.fn(async () => ["task-1.yaml", "task-2.yaml"]),
+        runTask: vi.fn(async () => {
+          callCount++;
+          return { success: true, branch: `athanor/task-${callCount}/run` };
+        }),
+      });
+
+      await runPlan({ fromPlan: "plans/test.yaml" }, deps);
+
+      const calls = vi.mocked(deps.runTask).mock.calls;
+      // First task: no baseBranch
+      expect(calls[0][1].baseBranch).toBeUndefined();
+      // Second task: baseBranch from first task
+      expect(calls[1][1].baseBranch).toBe("athanor/task-1/run");
+    });
+
+    it("passes push: false to all tasks", async () => {
+      const deps = makeDeps({
+        invokeAgent: vi.fn(agentReturning(stringify(sampleTask))),
+        readdir: vi.fn(async () => ["task-1.yaml", "task-2.yaml"]),
+      });
+
+      await runPlan({ fromPlan: "plans/test.yaml" }, deps);
+
+      const calls = vi.mocked(deps.runTask).mock.calls;
+      expect(calls[0][1].push).toBe(false);
+      expect(calls[1][1].push).toBe(false);
+    });
+
+    it("calls fastForwardDefaultBranch after each success", async () => {
+      let callCount = 0;
+      const deps = makeDeps({
+        invokeAgent: vi.fn(agentReturning(stringify(sampleTask))),
+        readdir: vi.fn(async () => ["task-1.yaml", "task-2.yaml"]),
+        runTask: vi.fn(async () => {
+          callCount++;
+          return { success: true, branch: `athanor/task-${callCount}/run` };
+        }),
+      });
+
+      await runPlan({ fromPlan: "plans/test.yaml" }, deps);
+
+      expect(deps.fastForwardDefaultBranch).toHaveBeenCalledTimes(2);
+      expect(deps.fastForwardDefaultBranch).toHaveBeenCalledWith("/repo", "athanor/task-1/run");
+      expect(deps.fastForwardDefaultBranch).toHaveBeenCalledWith("/repo", "athanor/task-2/run");
+    });
+
+    it("continues when fast-forward fails", async () => {
+      const deps = makeDeps({
+        invokeAgent: vi.fn(agentReturning(stringify(sampleTask))),
+        readdir: vi.fn(async () => ["task-1.yaml", "task-2.yaml"]),
+        fastForwardDefaultBranch: vi.fn(async () => false),
+      });
+
+      const ok = await runPlan({ fromPlan: "plans/test.yaml" }, deps);
+
+      expect(ok).toBe(true);
+      expect(deps.runTask).toHaveBeenCalledTimes(2);
+    });
+
+    it("--start-at skips preceding tasks", async () => {
+      const deps = makeDeps({
+        invokeAgent: vi.fn(agentReturning(stringify(sampleTask))),
+        readdir: vi.fn(async () => ["task-1.yaml", "task-2.yaml", "task-3.yaml"]),
+      });
+
+      const ok = await runPlan({ fromPlan: "plans/test.yaml", startAt: "task-2" }, deps);
+
+      expect(ok).toBe(true);
+      // Should only run task-2 and task-3
+      expect(deps.runTask).toHaveBeenCalledTimes(2);
+    });
+
+    it("--start-at with unknown task returns false", async () => {
+      const { logger, messages } = makeLogger();
+      const deps = makeDeps({
+        log: logger,
+        invokeAgent: vi.fn(agentReturning(stringify(sampleTask))),
+        readdir: vi.fn(async () => ["task-1.yaml"]),
+      });
+
+      const ok = await runPlan({ fromPlan: "plans/test.yaml", startAt: "nonexistent" }, deps);
+
+      expect(ok).toBe(false);
+      expect(messages.error.some((m) => m.includes("--start-at"))).toBe(true);
     });
   });
 

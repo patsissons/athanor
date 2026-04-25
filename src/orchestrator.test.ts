@@ -142,9 +142,9 @@ describe("runTask", () => {
       installResults: [{ exitCode: 1, stderr: "boom" }],
     });
 
-    const ok = await runTask(makeTask(), taskOpts, runtime.deps);
+    const result = await runTask(makeTask(), taskOpts, runtime.deps);
 
-    expect(ok).toBe(false);
+    expect(result.success).toBe(false);
     expect(runtime.messages.error).toContain("npm install failed:\nboom");
     expect(runtime.deps.invokeAgent).not.toHaveBeenCalled();
   });
@@ -154,9 +154,9 @@ describe("runTask", () => {
       agentResults: [{ success: false, stderr: "claude failed" }],
     });
 
-    const ok = await runTask(makeTask(), taskOpts, runtime.deps);
+    const result = await runTask(makeTask(), taskOpts, runtime.deps);
 
-    expect(ok).toBe(false);
+    expect(result.success).toBe(false);
     expect(runtime.messages.error).toContain("Agent invocation failed: claude failed");
   });
 
@@ -170,9 +170,9 @@ describe("runTask", () => {
       ],
     });
 
-    const ok = await runTask(makeTask(), taskOpts, runtime.deps);
+    const result = await runTask(makeTask(), taskOpts, runtime.deps);
 
-    expect(ok).toBe(true);
+    expect(result.success).toBe(true);
     expect(runtime.deps.invokeAgent).toHaveBeenCalledTimes(2);
     const secondPrompt = vi.mocked(runtime.deps.invokeAgent).mock.calls[1]?.[0].prompt;
     expect(secondPrompt).toContain("Agent modified forbidden files");
@@ -190,9 +190,9 @@ describe("runTask", () => {
       ],
     });
 
-    const ok = await runTask(makeTask(), taskOpts, runtime.deps);
+    const result = await runTask(makeTask(), taskOpts, runtime.deps);
 
-    expect(ok).toBe(true);
+    expect(result.success).toBe(true);
     const secondPrompt = vi.mocked(runtime.deps.invokeAgent).mock.calls[1]?.[0].prompt;
     expect(secondPrompt).toContain("=== typecheck (exit 1) ===");
     expect(secondPrompt).toContain("bad types");
@@ -201,9 +201,9 @@ describe("runTask", () => {
   it("commits and pushes on success", async () => {
     const runtime = makeRuntime({});
 
-    const ok = await runTask(makeTask(), taskOpts, runtime.deps);
+    const result = await runTask(makeTask(), taskOpts, runtime.deps);
 
-    expect(ok).toBe(true);
+    expect(result.success).toBe(true);
     expect(runtime.worktree.commitAll).toHaveBeenCalledWith("Add demo page\n\nTask: demo");
     expect(runtime.worktree.push).toHaveBeenCalled();
   });
@@ -213,9 +213,9 @@ describe("runTask", () => {
       pushError: new Error("no remote"),
     });
 
-    const ok = await runTask(makeTask(), taskOpts, runtime.deps);
+    const result = await runTask(makeTask(), taskOpts, runtime.deps);
 
-    expect(ok).toBe(true);
+    expect(result.success).toBe(true);
     expect(runtime.messages.warn.some((message) => message.includes("Push failed"))).toBe(true);
   });
 
@@ -231,9 +231,9 @@ describe("runTask", () => {
       ],
     });
 
-    const ok = await runTask(makeTask(), taskOpts, runtime.deps);
+    const result = await runTask(makeTask(), taskOpts, runtime.deps);
 
-    expect(ok).toBe(false);
+    expect(result.success).toBe(false);
     expect(runtime.worktree.commitAll).not.toHaveBeenCalled();
   });
 
@@ -242,9 +242,9 @@ describe("runTask", () => {
       agentResults: [{ success: true, stderr: "", summary: "Added the demo page route." }],
     });
 
-    const ok = await runTask(makeTask(), taskOpts, runtime.deps);
+    const result = await runTask(makeTask(), taskOpts, runtime.deps);
 
-    expect(ok).toBe(true);
+    expect(result.success).toBe(true);
     expect(runtime.appendedSummaries).toHaveLength(1);
     expect(runtime.appendedSummaries[0]).toEqual({
       taskId: "demo",
@@ -258,9 +258,9 @@ describe("runTask", () => {
       agentResults: [{ success: true, stderr: "" }],
     });
 
-    const ok = await runTask(makeTask(), taskOpts, runtime.deps);
+    const result = await runTask(makeTask(), taskOpts, runtime.deps);
 
-    expect(ok).toBe(true);
+    expect(result.success).toBe(true);
     expect(runtime.appendedSummaries[0]?.summary).toBe("Completed task: Add demo page");
   });
 
@@ -276,9 +276,9 @@ describe("runTask", () => {
       ],
     });
 
-    const ok = await runTask(makeTask(), taskOpts, runtime.deps);
+    const result = await runTask(makeTask(), taskOpts, runtime.deps);
 
-    expect(ok).toBe(false);
+    expect(result.success).toBe(false);
     expect(runtime.appendedSummaries).toHaveLength(0);
   });
 
@@ -287,9 +287,9 @@ describe("runTask", () => {
       existingCompletedTasks: "## prior-task: Prior Task\n\nDid something useful.\n",
     });
 
-    const ok = await runTask(makeTask(), taskOpts, runtime.deps);
+    const result = await runTask(makeTask(), taskOpts, runtime.deps);
 
-    expect(ok).toBe(true);
+    expect(result.success).toBe(true);
     const firstPrompt = vi.mocked(runtime.deps.invokeAgent).mock.calls[0]?.[0].prompt;
     expect(firstPrompt).toContain("## Previously completed tasks");
     expect(firstPrompt).toContain("## prior-task: Prior Task");
@@ -298,9 +298,9 @@ describe("runTask", () => {
   it("omits previously completed tasks section when none exist", async () => {
     const runtime = makeRuntime({});
 
-    const ok = await runTask(makeTask(), taskOpts, runtime.deps);
+    const result = await runTask(makeTask(), taskOpts, runtime.deps);
 
-    expect(ok).toBe(true);
+    expect(result.success).toBe(true);
     const firstPrompt = vi.mocked(runtime.deps.invokeAgent).mock.calls[0]?.[0].prompt;
     expect(firstPrompt).not.toContain("## Previously completed tasks");
   });
@@ -308,9 +308,9 @@ describe("runTask", () => {
   it("skips evaluator when not configured", async () => {
     const runtime = makeRuntime({});
 
-    const ok = await runTask(makeTask(), taskOpts, runtime.deps);
+    const result = await runTask(makeTask(), taskOpts, runtime.deps);
 
-    expect(ok).toBe(true);
+    expect(result.success).toBe(true);
     expect(runtime.deps.runEvaluator).not.toHaveBeenCalled();
   });
 
@@ -322,9 +322,9 @@ describe("runTask", () => {
     const task = makeTask({
       evaluator: { enabled: true, model: "opus", mode: "diff-review" },
     });
-    const ok = await runTask(task, taskOpts, runtime.deps);
+    const result = await runTask(task, taskOpts, runtime.deps);
 
-    expect(ok).toBe(true);
+    expect(result.success).toBe(true);
     expect(runtime.deps.runEvaluator).toHaveBeenCalledTimes(1);
     expect(runtime.worktree.commitAll).toHaveBeenCalled();
   });
@@ -360,9 +360,9 @@ describe("runTask", () => {
     const task = makeTask({
       evaluator: { enabled: true, model: "opus", mode: "diff-review" },
     });
-    const ok = await runTask(task, taskOpts, runtime.deps);
+    const result = await runTask(task, taskOpts, runtime.deps);
 
-    expect(ok).toBe(true);
+    expect(result.success).toBe(true);
     expect(runtime.deps.runEvaluator).toHaveBeenCalledTimes(2);
     expect(runtime.deps.invokeAgent).toHaveBeenCalledTimes(2);
     const secondPrompt = vi.mocked(runtime.deps.invokeAgent).mock.calls[1]?.[0].prompt;
@@ -385,9 +385,9 @@ describe("runTask", () => {
     const task = makeTask({
       evaluator: { enabled: true, model: "opus", mode: "diff-review" },
     });
-    const ok = await runTask(task, taskOpts, runtime.deps);
+    const result = await runTask(task, taskOpts, runtime.deps);
 
-    expect(ok).toBe(true);
+    expect(result.success).toBe(true);
     // Evaluator should only run on the second attempt (when gates pass)
     expect(runtime.deps.runEvaluator).toHaveBeenCalledTimes(1);
   });
@@ -398,9 +398,9 @@ describe("runTask", () => {
     const task = makeTask({
       evaluator: { enabled: true, model: "opus", mode: "interactive" },
     });
-    const ok = await runTask(task, taskOpts, runtime.deps);
+    const result = await runTask(task, taskOpts, runtime.deps);
 
-    expect(ok).toBe(false);
+    expect(result.success).toBe(false);
     expect(runtime.messages.error.some((m) => m.includes("no devServer config found"))).toBe(true);
     expect(runtime.deps.runEvaluator).not.toHaveBeenCalled();
   });
@@ -424,9 +424,87 @@ describe("runTask", () => {
     const task = makeTask({
       evaluator: { enabled: true, model: "opus", mode: "diff-review" },
     });
-    const ok = await runTask(task, taskOpts, runtime.deps);
+    const result = await runTask(task, taskOpts, runtime.deps);
 
-    expect(ok).toBe(false);
+    expect(result.success).toBe(false);
     expect(runtime.worktree.commitAll).not.toHaveBeenCalled();
+  });
+
+  it("returns branch in result on success", async () => {
+    const runtime = makeRuntime({});
+
+    const result = await runTask(makeTask(), taskOpts, runtime.deps);
+
+    expect(result).toEqual({
+      success: true,
+      branch: "athanor/demo/20260423-120000-abcd",
+    });
+  });
+
+  it("returns branch in result on failure", async () => {
+    const runtime = makeRuntime({
+      gateResults: [
+        [{ name: "typecheck", passed: false, exitCode: 1, output: "bad" }],
+        [{ name: "typecheck", passed: false, exitCode: 1, output: "bad" }],
+      ],
+      agentResults: [
+        { success: true, stderr: "" },
+        { success: true, stderr: "" },
+      ],
+    });
+
+    const result = await runTask(makeTask(), taskOpts, runtime.deps);
+
+    expect(result).toEqual({
+      success: false,
+      branch: "athanor/demo/20260423-120000-abcd",
+    });
+  });
+
+  it("forwards baseBranch to createWorktree", async () => {
+    const runtime = makeRuntime({});
+
+    await runTask(makeTask(), { ...taskOpts, baseBranch: "athanor/prev/run" }, runtime.deps);
+
+    expect(runtime.deps.createWorktree).toHaveBeenCalledWith(
+      "/repo",
+      "/harness",
+      "demo",
+      "20260423-120000-abcd",
+      "athanor/prev/run",
+    );
+  });
+
+  it("omits baseBranch when not provided", async () => {
+    const runtime = makeRuntime({});
+
+    await runTask(makeTask(), taskOpts, runtime.deps);
+
+    expect(runtime.deps.createWorktree).toHaveBeenCalledWith(
+      "/repo",
+      "/harness",
+      "demo",
+      "20260423-120000-abcd",
+      undefined,
+    );
+  });
+
+  it("skips push when push option is false", async () => {
+    const runtime = makeRuntime({});
+
+    const result = await runTask(makeTask(), { ...taskOpts, push: false }, runtime.deps);
+
+    expect(result.success).toBe(true);
+    expect(runtime.worktree.commitAll).toHaveBeenCalled();
+    expect(runtime.worktree.push).not.toHaveBeenCalled();
+  });
+
+  it("pushes by default when push option is not set", async () => {
+    const runtime = makeRuntime({});
+
+    const result = await runTask(makeTask(), taskOpts, runtime.deps);
+
+    expect(result.success).toBe(true);
+    expect(runtime.worktree.push).toHaveBeenCalled();
   });
 });
