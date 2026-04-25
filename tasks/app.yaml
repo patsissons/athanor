@@ -2,3 +2,17 @@
 id: athanor
 title: Athanor
 description: A harness for driving Claude Code to implement features against well defined tasks.
+
+# guidelines:                         # App-level guidelines included in every task enrichment prompt
+#   - "Use TypeScript strict mode"
+#   - "Follow existing code conventions"
+
+# devServer:                          # Dev server config for interactive evaluator mode
+#   command: "npm run dev"            # Command to start the dev server
+#   readyPattern: "ready on"          # String in stdout that signals the server is ready
+#   port: 3000                        # Port the dev server listens on
+#   timeoutMs: 30000                  # Max ms to wait for ready (default: 30000)
+#
+# When devServer is configured, the planner will automatically use interactive
+# evaluation (Playwright MCP) for tasks that produce user-facing UI, and
+# diff-review for non-UI tasks like utilities, config, or API-only work.

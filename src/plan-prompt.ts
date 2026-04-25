@@ -21,7 +21,11 @@ tasks:
         - name: typecheck
           command: "npm run typecheck"
       maxAgentAttempts: 2
-      model: sonnet`;
+      model: sonnet
+      evaluator:
+        enabled: true
+        mode: diff-review  # or "interactive"
+        model: opus`;
 
 const TASK_SPEC_SHAPE = `\
 id: kebab-case-task-id
@@ -45,7 +49,12 @@ gates:
   - name: test
     command: "npm test -- --passWithNoTests"
 maxAgentAttempts: 2
-model: sonnet`;
+model: sonnet
+# Optional: evaluator for adversarial review after gates pass
+# evaluator:
+#   enabled: true
+#   mode: diff-review       # or "interactive"
+#   model: opus`;
 
 export function buildPlanPrompt(userPrompt: string, app?: Partial<AppSpec>): string {
   const lines: string[] = [];
