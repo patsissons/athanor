@@ -84,6 +84,112 @@ export function buildEvaluatorPrompt(opts: {
   return lines.join("\n");
 }
 
+export function buildInteractiveEvaluatorPrompt(opts: {
+  task: TaskSpec;
+  diff: string;
+  evaluator: EvaluatorConfig;
+  appUrl: string;
+}): string {
+  const { task, diff, evaluator, appUrl } = opts;
+  const lines: string[] = [];
+
+  lines.push("# Interactive QA Review");
+  lines.push("");
+  lines.push(
+    "You are an independent QA tester. You have access to a running application " +
+      "via Playwright browser tools. Your job is to interact with the app like a " +
+      "real user and verify that every acceptance criterion is met.",
+  );
+  lines.push("");
+
+  // ─── App URL ───────────────────────────────────────────────────
+  lines.push("## Running Application");
+  lines.push("");
+  lines.push(`The application is running at: ${appUrl}`);
+  lines.push("");
+  lines.push(
+    "Use Playwright tools to navigate to the app, interact with it, " +
+      "and verify each criterion below.",
+  );
+  lines.push("");
+
+  // ─── Task Context ──────────────────────────────────────────────
+  lines.push("## Task");
+  lines.push("");
+  lines.push(`**${task.title}**`);
+  lines.push("");
+  lines.push(task.description);
+  lines.push("");
+
+  // ─── Acceptance Criteria ───────────────────────────────────────
+  lines.push("## Acceptance Criteria");
+  lines.push("");
+  lines.push(
+    "Test each criterion by performing real user actions in the browser. " +
+      "For each one, state whether it is **met**, **partially met**, or " +
+      "**not met**, and describe what you observed.",
+  );
+  lines.push("");
+  task.acceptanceCriteria.forEach((c, i) => lines.push(`${i + 1}. ${c}`));
+  lines.push("");
+
+  // ─── Additional Criteria ───────────────────────────────────────
+  if (evaluator.criteria?.length) {
+    lines.push("## Additional Evaluation Criteria");
+    lines.push("");
+    evaluator.criteria.forEach((c, i) => lines.push(`${i + 1}. ${c}`));
+    lines.push("");
+  }
+
+  // ─── Diff for Context ─────────────────────────────────────────
+  lines.push("## Code Changes (for reference)");
+  lines.push("");
+  lines.push("```diff");
+  lines.push(diff);
+  lines.push("```");
+  lines.push("");
+
+  // ─── Testing Instructions ──────────────────────────────────────
+  lines.push("## Testing Instructions");
+  lines.push("");
+  lines.push("1. Navigate to the application URL.");
+  lines.push("2. For each acceptance criterion, perform the user actions needed to verify it.");
+  lines.push("3. Take screenshots when you find issues.");
+  lines.push("4. Test edge cases (empty states, invalid input, navigation).");
+  lines.push("5. After testing all criteria, produce your evaluation.");
+  lines.push("");
+
+  // ─── Anti-Patterns ────────────────────────────────────────────
+  lines.push("## Review Rules");
+  lines.push("");
+  lines.push("- Do NOT approve without actually interacting with the application.");
+  lines.push("- Do NOT approve if any criterion is only partially met.");
+  lines.push("- Do NOT talk yourself into approving marginal work. When in doubt, reject.");
+  lines.push("- If the page fails to load or shows errors, that is an automatic rejection.");
+  lines.push("");
+
+  // ─── Output Format ─────────────────────────────────────────────
+  lines.push("## Output Format");
+  lines.push("");
+  lines.push(
+    "After completing your testing, output ONLY valid YAML conforming to " +
+      "this shape (no markdown fences, no preamble):",
+  );
+  lines.push("");
+  lines.push("```");
+  lines.push(EVAL_RESULT_SHAPE);
+  lines.push("```");
+  lines.push("");
+  lines.push("- Set `passed: true` ONLY if every acceptance criterion is fully met.");
+  lines.push("- Include an issue for every criterion that is not met or partially met.");
+  lines.push("- The `criterion` field must quote the acceptance criterion text verbatim.");
+  lines.push(
+    "- Do NOT output anything before or after the YAML. Your entire response must be valid YAML.",
+  );
+
+  return lines.join("\n");
+}
+
 const EVAL_RESULT_SHAPE = `\
 passed: false
 score: 65

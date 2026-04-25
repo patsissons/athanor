@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildEvaluatorPrompt, buildEnrichmentCriticPrompt } from "./evaluator-prompt.js";
+import {
+  buildEvaluatorPrompt,
+  buildInteractiveEvaluatorPrompt,
+  buildEnrichmentCriticPrompt,
+} from "./evaluator-prompt.js";
 import { TaskSpecSchema } from "./task-spec.js";
 import type { EvaluatorConfig } from "./eval-spec.js";
 
@@ -16,6 +20,7 @@ function makeTask() {
 const defaultEvalConfig: EvaluatorConfig = {
   enabled: true,
   model: "opus",
+  mode: "diff-review",
 };
 
 describe("buildEvaluatorPrompt", () => {
@@ -98,6 +103,82 @@ describe("buildEvaluatorPrompt", () => {
 
     expect(prompt).toContain("independent QA reviewer");
     expect(prompt).toContain("You did NOT write this code");
+  });
+});
+
+describe("buildInteractiveEvaluatorPrompt", () => {
+  const interactiveConfig: EvaluatorConfig = {
+    enabled: true,
+    mode: "interactive",
+    model: "opus",
+    devServer: {
+      command: "npm run dev",
+      readyPattern: "ready on",
+      port: 3000,
+      timeoutMs: 30000,
+    },
+  };
+
+  it("includes app URL", () => {
+    const prompt = buildInteractiveEvaluatorPrompt({
+      task: makeTask(),
+      diff: "+code",
+      evaluator: interactiveConfig,
+      appUrl: "http://localhost:3000",
+    });
+
+    expect(prompt).toContain("http://localhost:3000");
+    expect(prompt).toContain("Running Application");
+  });
+
+  it("frames as interactive QA tester", () => {
+    const prompt = buildInteractiveEvaluatorPrompt({
+      task: makeTask(),
+      diff: "+code",
+      evaluator: interactiveConfig,
+      appUrl: "http://localhost:3000",
+    });
+
+    expect(prompt).toContain("Interactive QA Review");
+    expect(prompt).toContain("Playwright browser tools");
+    expect(prompt).toContain("interact with the app like a real user");
+  });
+
+  it("includes testing instructions", () => {
+    const prompt = buildInteractiveEvaluatorPrompt({
+      task: makeTask(),
+      diff: "+code",
+      evaluator: interactiveConfig,
+      appUrl: "http://localhost:3000",
+    });
+
+    expect(prompt).toContain("Navigate to the application URL");
+    expect(prompt).toContain("Take screenshots");
+    expect(prompt).toContain("Test edge cases");
+  });
+
+  it("includes anti-approval rules for interactive mode", () => {
+    const prompt = buildInteractiveEvaluatorPrompt({
+      task: makeTask(),
+      diff: "+code",
+      evaluator: interactiveConfig,
+      appUrl: "http://localhost:3000",
+    });
+
+    expect(prompt).toContain("Do NOT approve without actually interacting");
+    expect(prompt).toContain("page fails to load or shows errors");
+  });
+
+  it("includes the diff as reference context", () => {
+    const prompt = buildInteractiveEvaluatorPrompt({
+      task: makeTask(),
+      diff: "+++ a/src/demo.tsx\n+code",
+      evaluator: interactiveConfig,
+      appUrl: "http://localhost:3000",
+    });
+
+    expect(prompt).toContain("Code Changes (for reference)");
+    expect(prompt).toContain("+++ a/src/demo.tsx");
   });
 });
 

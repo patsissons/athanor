@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EvalResultSchema, EvaluatorConfigSchema } from "./eval-spec.js";
+import { DevServerConfigSchema, EvalResultSchema, EvaluatorConfigSchema } from "./eval-spec.js";
 
 describe("EvalResultSchema", () => {
   it("parses a passing result", () => {
@@ -66,11 +66,12 @@ describe("EvalResultSchema", () => {
 });
 
 describe("EvaluatorConfigSchema", () => {
-  it("defaults to disabled with opus model", () => {
+  it("defaults to disabled with opus model and diff-review mode", () => {
     const config = EvaluatorConfigSchema.parse({});
 
     expect(config.enabled).toBe(false);
     expect(config.model).toBe("opus");
+    expect(config.mode).toBe("diff-review");
   });
 
   it("parses enabled config with criteria", () => {
@@ -83,5 +84,66 @@ describe("EvaluatorConfigSchema", () => {
     expect(config.enabled).toBe(true);
     expect(config.model).toBe("sonnet");
     expect(config.criteria).toEqual(["No stubbed implementations"]);
+  });
+
+  it("parses interactive mode with devServer", () => {
+    const config = EvaluatorConfigSchema.parse({
+      enabled: true,
+      mode: "interactive",
+      devServer: {
+        command: "npm run dev",
+        readyPattern: "ready on",
+        port: 3000,
+      },
+    });
+
+    expect(config.mode).toBe("interactive");
+    expect(config.devServer?.command).toBe("npm run dev");
+    expect(config.devServer?.timeoutMs).toBe(30000);
+  });
+
+  it("rejects interactive mode without devServer", () => {
+    expect(() =>
+      EvaluatorConfigSchema.parse({
+        enabled: true,
+        mode: "interactive",
+      }),
+    ).toThrow("devServer is required");
+  });
+
+  it("allows diff-review mode without devServer", () => {
+    const config = EvaluatorConfigSchema.parse({
+      enabled: true,
+      mode: "diff-review",
+    });
+
+    expect(config.mode).toBe("diff-review");
+    expect(config.devServer).toBeUndefined();
+  });
+});
+
+describe("DevServerConfigSchema", () => {
+  it("parses valid config with default timeout", () => {
+    const config = DevServerConfigSchema.parse({
+      command: "npm run dev",
+      readyPattern: "Local:",
+      port: 5173,
+    });
+
+    expect(config.command).toBe("npm run dev");
+    expect(config.readyPattern).toBe("Local:");
+    expect(config.port).toBe(5173);
+    expect(config.timeoutMs).toBe(30000);
+  });
+
+  it("allows custom timeout", () => {
+    const config = DevServerConfigSchema.parse({
+      command: "npm run dev",
+      readyPattern: "ready",
+      port: 3000,
+      timeoutMs: 60000,
+    });
+
+    expect(config.timeoutMs).toBe(60000);
   });
 });

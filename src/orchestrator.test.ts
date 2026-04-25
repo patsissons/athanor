@@ -320,7 +320,7 @@ describe("runTask", () => {
     });
 
     const task = makeTask({
-      evaluator: { enabled: true, model: "opus" },
+      evaluator: { enabled: true, model: "opus", mode: "diff-review" },
     });
     const ok = await runTask(task, taskOpts, runtime.deps);
 
@@ -358,7 +358,7 @@ describe("runTask", () => {
     });
 
     const task = makeTask({
-      evaluator: { enabled: true, model: "opus" },
+      evaluator: { enabled: true, model: "opus", mode: "diff-review" },
     });
     const ok = await runTask(task, taskOpts, runtime.deps);
 
@@ -383,7 +383,7 @@ describe("runTask", () => {
     });
 
     const task = makeTask({
-      evaluator: { enabled: true, model: "opus" },
+      evaluator: { enabled: true, model: "opus", mode: "diff-review" },
     });
     const ok = await runTask(task, taskOpts, runtime.deps);
 
@@ -409,7 +409,7 @@ describe("runTask", () => {
     });
 
     const task = makeTask({
-      evaluator: { enabled: true, model: "opus" },
+      evaluator: { enabled: true, model: "opus", mode: "diff-review" },
     });
     const ok = await runTask(task, taskOpts, runtime.deps);
 
