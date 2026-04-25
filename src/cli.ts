@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { resolve } from "node:path";
 import { loadTaskSpec } from "./task-spec.js";
+import { loadAppDefaults } from "./plan-defaults.js";
+import { mergeAppDevServer } from "./merge-dev-server.js";
 import { setupLogging, log, enableDebug } from "./logger.js";
 import { runTask } from "./orchestrator.js";
 import { cleanWorktrees, parseCleanOpts } from "./clean.js";
@@ -28,7 +30,9 @@ async function main() {
         process.exit(1);
         return;
       }
-      const task = await loadTaskSpec(taskPath, targetRepoRoot);
+      let task = await loadTaskSpec(taskPath, targetRepoRoot);
+      const appDefaults = await loadAppDefaults(targetRepoRoot);
+      task = mergeAppDevServer(task, appDefaults);
       const runDir = resolve(harnessRoot, "runs", task.id);
       const logFile = await setupLogging(runDir);
       log.info(`Logging to ${logFile}`);

@@ -392,6 +392,19 @@ describe("runTask", () => {
     expect(runtime.deps.runEvaluator).toHaveBeenCalledTimes(1);
   });
 
+  it("fails when interactive evaluator has no devServer", async () => {
+    const runtime = makeRuntime({});
+
+    const task = makeTask({
+      evaluator: { enabled: true, model: "opus", mode: "interactive" },
+    });
+    const ok = await runTask(task, taskOpts, runtime.deps);
+
+    expect(ok).toBe(false);
+    expect(runtime.messages.error.some((m) => m.includes("no devServer config found"))).toBe(true);
+    expect(runtime.deps.runEvaluator).not.toHaveBeenCalled();
+  });
+
   it("fails after exhausting attempts with evaluator rejections", async () => {
     const runtime = makeRuntime({
       evalResults: [

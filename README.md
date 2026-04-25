@@ -161,7 +161,7 @@ The agent is invoked at the `[agent]` nodes. Everything else is plain TypeScript
 | `src/planner.ts`           | Three-phase plan pipeline (generate, enrich, execute)             |
 | `src/plan-prompt.ts`       | Prompt construction for plan generation and task enrichment       |
 | `src/orchestrator.ts`      | Single-task execution blueprint (worktree, agent, gates, retry)   |
-| `src/app-spec.ts`          | Zod schema for `tasks/app.yaml` (app-level config and guidelines) |
+| `src/app-spec.ts`          | Zod schema for `tasks/app.yaml` (identity, guidelines, devServer) |
 | `src/plan-spec.ts`         | Zod schema for plan YAML files                                    |
 | `src/task-spec.ts`         | Zod schema for task YAML files                                    |
 | `src/eval-spec.ts`         | Zod schemas for evaluator config, results, and dev server config  |
@@ -169,6 +169,7 @@ The agent is invoked at the `[agent]` nodes. Everything else is plain TypeScript
 | `src/evaluator-prompt.ts`  | Prompt construction for evaluator and enrichment critic           |
 | `src/enrichment-critic.ts` | Single-pass critic for task spec quality review                   |
 | `src/dev-server.ts`        | Dev server lifecycle for interactive evaluator mode               |
+| `src/merge-dev-server.ts`  | Inherits app-level devServer into task evaluator config           |
 | `src/plan-defaults.ts`     | Loaders for app, plan, and task default files                     |
 | `src/load-defaults.ts`     | Generic YAML defaults loader (graceful on missing files)          |
 | `src/prompt.ts`            | Prompt construction for task execution                            |
@@ -185,11 +186,11 @@ The agent is invoked at the `[agent]` nodes. Everything else is plain TypeScript
 
 These files live in the **target repository** (not the harness):
 
-| File                      | Purpose                                                                                                                                                                  |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `tasks/app.yaml`          | App-level identity and guidelines. Fields: `id`, `title`, optional `description` and `guidelines`. Guidelines defined here are included in every task enrichment prompt. |
-| `tasks/task.default.yaml` | Default values for task specs (gates, forbidden paths, model, etc.). Merged under every task at load time.                                                               |
-| `tasks/example.yaml`      | Example standalone task spec for reference.                                                                                                                              |
+| File                      | Purpose                                                                                                                                                                                                                           |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tasks/app.yaml`          | App-level identity, guidelines, and dev server config. Fields: `id`, `title`, optional `description`, `guidelines`, and `devServer`. When `devServer` is set, the planner automatically uses interactive evaluation for UI tasks. |
+| `tasks/task.default.yaml` | Default values for task specs (gates, forbidden paths, model, etc.). Merged under every task at load time.                                                                                                                        |
+| `tasks/example.yaml`      | Example standalone task spec for reference.                                                                                                                                                                                       |
 
 ## Task spec
 

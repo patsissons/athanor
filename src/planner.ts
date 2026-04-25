@@ -6,6 +6,7 @@ import { TaskSpecSchema, type TaskSpec, loadTaskSpec } from "./task-spec.js";
 import type { AppSpec } from "./app-spec.js";
 import type { EvalResult } from "./eval-spec.js";
 import { buildPlanPrompt, buildTaskEnrichmentPrompt } from "./plan-prompt.js";
+import { mergeAppDevServer } from "./merge-dev-server.js";
 import { loadTaskDefaults, loadAppDefaults } from "./plan-defaults.js";
 import { extractYaml } from "./yaml-extract.js";
 import { invokeClaudeCode, type AgentResult } from "./agent.js";
@@ -244,7 +245,8 @@ export async function runPlan(
   let allPassed = true;
   for (const file of yamlFiles) {
     const taskPath = resolve(tasksDir, file);
-    const task = await d.loadTaskSpec(taskPath, d.targetRepoRoot);
+    let task = await d.loadTaskSpec(taskPath, d.targetRepoRoot);
+    task = mergeAppDevServer(task, appDefaults);
     d.log.info(`Running task: ${task.id}`);
     const ok = await d.runTask(task, {
       targetRepoRoot: d.targetRepoRoot,

@@ -253,6 +253,13 @@ export async function runTask(
 
     // ─── AGENT NODE: evaluator (optional) ────────────────────────
     if (task.evaluator?.enabled) {
+      if (task.evaluator.mode === "interactive" && !task.evaluator.devServer) {
+        runtime.log.error(
+          "Evaluator mode is 'interactive' but no devServer config found. " +
+            "Set devServer in the task spec or in tasks/app.yaml.",
+        );
+        return false;
+      }
       runtime.log.info(`Running evaluator (${task.evaluator.model})`);
       const diffText = await wt.diff();
       const evalResult = await runtime.runEvaluator({

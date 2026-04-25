@@ -51,4 +51,27 @@ describe("AppSpecSchema", () => {
     const result = AppSpecSchema.partial().parse({});
     expect(result).toEqual({});
   });
+
+  it("parses a spec with devServer", () => {
+    const result = AppSpecSchema.parse({
+      id: "my-app",
+      title: "My App",
+      devServer: {
+        command: "npm run dev",
+        readyPattern: "ready on",
+        port: 3000,
+      },
+    });
+    expect(result.devServer).toEqual({
+      command: "npm run dev",
+      readyPattern: "ready on",
+      port: 3000,
+      timeoutMs: 30000,
+    });
+  });
+
+  it("parses a spec without devServer", () => {
+    const result = AppSpecSchema.parse({ id: "my-app", title: "My App" });
+    expect(result.devServer).toBeUndefined();
+  });
 });

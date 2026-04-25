@@ -69,7 +69,7 @@ export function buildPlanPrompt(userPrompt: string, app?: Partial<AppSpec>): str
   );
   lines.push("");
 
-  if (app && (app.description || app.guidelines?.length)) {
+  if (app && (app.description || app.guidelines?.length || app.devServer)) {
     lines.push("## App Context");
     lines.push("");
     if (app.title) {
@@ -85,6 +85,10 @@ export function buildPlanPrompt(userPrompt: string, app?: Partial<AppSpec>): str
       for (const g of app.guidelines) {
         lines.push(`- ${g}`);
       }
+      lines.push("");
+    }
+    if (app.devServer) {
+      lines.push("This project has a dev server configured for interactive testing.");
       lines.push("");
     }
   }
@@ -118,6 +122,17 @@ export function buildPlanPrompt(userPrompt: string, app?: Partial<AppSpec>): str
       "needs Opus instead of Sonnet, or must be restricted to specific file paths).",
   );
   lines.push("- Order tasks logically — foundational tasks first, dependent tasks after.");
+
+  if (app?.devServer) {
+    lines.push(
+      "- This project has a dev server. For tasks that produce user-facing UI (pages, " +
+        "components, visual changes), include `evaluator: { enabled: true, mode: interactive }` " +
+        "in overrides. For non-UI tasks (utilities, config, API-only, data models), either omit " +
+        "the evaluator or use `evaluator: { enabled: true, mode: diff-review }`. " +
+        "Do NOT include devServer in the evaluator — the harness injects it automatically.",
+    );
+  }
+
   lines.push(
     "- Do NOT output anything before or after the YAML. Your entire response must be valid YAML.",
   );
@@ -255,6 +270,15 @@ export function buildTaskEnrichmentPrompt(context: TaskEnrichmentContext): strin
   lines.push(
     "- Consider the full plan context above. Scope this task to avoid overlap with sibling tasks.",
   );
+
+  if (app.devServer) {
+    lines.push(
+      "- If the task overrides include `evaluator.mode: interactive`, include " +
+        "`evaluator: { enabled: true, mode: interactive }` in the output YAML. " +
+        "Do NOT include devServer — the harness injects it automatically from app config.",
+    );
+  }
+
   lines.push(
     "- Do NOT output anything before or after the YAML. Your entire response must be valid YAML.",
   );
