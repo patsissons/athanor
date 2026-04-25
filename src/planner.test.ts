@@ -319,6 +319,18 @@ describe("runPlan", () => {
       expect(deps.runTask).toHaveBeenCalledTimes(2);
     });
 
+    it("--start-at skips Phase 2 entirely", async () => {
+      const deps = makeDeps({
+        readdir: vi.fn(async () => ["task-1.yaml"]),
+        runTask: vi.fn(async () => ({ success: true, branch: "athanor/task/run" })),
+      });
+
+      await runPlan({ fromPlan: "plans/test.yaml", startAt: "task-1" }, deps);
+
+      // No enrichment agent calls — only Phase 3 runs
+      expect(deps.invokeAgent).not.toHaveBeenCalled();
+    });
+
     it("--start-at with unknown task returns false", async () => {
       const { logger, messages } = makeLogger();
       const deps = makeDeps({

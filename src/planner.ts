@@ -148,128 +148,133 @@ export async function runPlan(
   }
 
   // ─── Phase 2: Task Generation ──────────────────────────────────
-  d.log.info("Phase 2: Generating task specs with Sonnet");
   const tasksDir = resolve(d.targetRepoRoot, ".athanor", "tasks", plan.id);
-  await d.mkdir(tasksDir);
 
-  // Check which tasks already have YAML files so we can skip them
-  let existingFiles: string[] = [];
-  try {
-    existingFiles = await d.readdir(tasksDir);
-  } catch {
-    // Directory may not exist yet; treat as empty.
-  }
-  const existingTaskIds = new Set(
-    existingFiles.filter((f) => f.endsWith(".yaml")).map((f) => f.replace(/\.yaml$/, "")),
-  );
+  if (opts.startAt) {
+    d.log.info("Skipping task generation (--start-at implies tasks exist)");
+  } else {
+    d.log.info("Phase 2: Generating task specs with Sonnet");
+    await d.mkdir(tasksDir);
 
-  for (const planTask of plan.tasks) {
-    if (existingTaskIds.has(planTask.id)) {
-      d.log.info(`Skipping already created task: ${planTask.id}`);
-      continue;
-    }
-
-    d.log.info(`Enriching task: ${planTask.id}`);
-    const prompt = buildTaskEnrichmentPrompt({
-      app: appDefaults,
-      plan,
-      targetTaskId: planTask.id,
-      taskDefaults,
-    });
-    const result = await d.invokeAgent({
-      prompt,
-      cwd: d.targetRepoRoot,
-      model: "sonnet",
-    });
-
-    if (!result.success) {
-      d.log.error(`Task enrichment agent failed for ${planTask.id}: ${result.stderr}`);
-      return false;
-    }
-
-    let yamlText: string;
+    // Check which tasks already have YAML files so we can skip them
+    let existingFiles: string[] = [];
     try {
-      yamlText = extractYaml(result.stdout);
-    } catch (err) {
-      d.log.error(`Failed to extract YAML for task ${planTask.id}: ${String(err)}`);
-      return false;
+      existingFiles = await d.readdir(tasksDir);
+    } catch {
+      // Directory may not exist yet; treat as empty.
     }
+    const existingTaskIds = new Set(
+      existingFiles.filter((f) => f.endsWith(".yaml")).map((f) => f.replace(/\.yaml$/, "")),
+    );
 
-    let taskSpec: TaskSpec;
-    try {
-      taskSpec = TaskSpecSchema.parse(parse(yamlText));
-    } catch (err) {
-      d.log.error(`Task YAML validation failed for ${planTask.id}: ${String(err)}`);
-      d.log.error(`Extracted YAML:\n${yamlText}`);
-      return false;
-    }
+    for (const planTask of plan.tasks) {
+      if (existingTaskIds.has(planTask.id)) {
+        d.log.info(`Skipping already created task: ${planTask.id}`);
+        continue;
+      }
 
-    // ─── Optional: Single-pass enrichment critic ─────────────────
-    if (opts.enrichmentCritic?.enabled) {
-      const criticModel = opts.enrichmentCritic.model ?? "opus";
-      d.log.info(`Running enrichment critic on ${planTask.id} (${criticModel})`);
-      const criticResult = await d.critiqueTaskSpec({
-        taskSpec,
+      d.log.info(`Enriching task: ${planTask.id}`);
+      const prompt = buildTaskEnrichmentPrompt({
+        app: appDefaults,
         plan,
+        targetTaskId: planTask.id,
+        taskDefaults,
+      });
+      const result = await d.invokeAgent({
+        prompt,
         cwd: d.targetRepoRoot,
-        model: criticModel,
+        model: "sonnet",
       });
 
-      if (!criticResult.passed) {
-        d.log.warn(`Critic rejected ${planTask.id}: ${criticResult.summary}`);
-        d.log.info(`Re-enriching ${planTask.id} with critic feedback`);
+      if (!result.success) {
+        d.log.error(`Task enrichment agent failed for ${planTask.id}: ${result.stderr}`);
+        return false;
+      }
 
-        // Build a new enrichment prompt that includes the critic feedback
-        const criticFeedback = [
-          "A critic reviewed the initial task spec and found issues:",
-          criticResult.summary,
-          ...(criticResult.issues ?? []).map(
-            (issue) =>
-              `  [${issue.severity}] ${issue.criterion}: ${issue.description}` +
-              (issue.suggestion ? ` (fix: ${issue.suggestion})` : ""),
-          ),
-        ].join("\n");
+      let yamlText: string;
+      try {
+        yamlText = extractYaml(result.stdout);
+      } catch (err) {
+        d.log.error(`Failed to extract YAML for task ${planTask.id}: ${String(err)}`);
+        return false;
+      }
 
-        const retryPrompt = buildTaskEnrichmentPrompt({
-          app: appDefaults,
+      let taskSpec: TaskSpec;
+      try {
+        taskSpec = TaskSpecSchema.parse(parse(yamlText));
+      } catch (err) {
+        d.log.error(`Task YAML validation failed for ${planTask.id}: ${String(err)}`);
+        d.log.error(`Extracted YAML:\n${yamlText}`);
+        return false;
+      }
+
+      // ─── Optional: Single-pass enrichment critic ─────────────────
+      if (opts.enrichmentCritic?.enabled) {
+        const criticModel = opts.enrichmentCritic.model ?? "opus";
+        d.log.info(`Running enrichment critic on ${planTask.id} (${criticModel})`);
+        const criticResult = await d.critiqueTaskSpec({
+          taskSpec,
           plan,
-          targetTaskId: planTask.id,
-          taskDefaults,
-          assets: { "Critic Feedback": criticFeedback },
-        });
-
-        const retryResult = await d.invokeAgent({
-          prompt: retryPrompt,
           cwd: d.targetRepoRoot,
-          model: "sonnet",
+          model: criticModel,
         });
 
-        if (retryResult.success) {
-          try {
-            const retryYaml = extractYaml(retryResult.stdout);
-            taskSpec = TaskSpecSchema.parse(parse(retryYaml));
-            d.log.info(`Re-enrichment succeeded for ${planTask.id}`);
-          } catch (err) {
-            d.log.warn(
-              `Re-enrichment parse failed for ${planTask.id}, using original spec: ${String(err)}`,
-            );
+        if (!criticResult.passed) {
+          d.log.warn(`Critic rejected ${planTask.id}: ${criticResult.summary}`);
+          d.log.info(`Re-enriching ${planTask.id} with critic feedback`);
+
+          // Build a new enrichment prompt that includes the critic feedback
+          const criticFeedback = [
+            "A critic reviewed the initial task spec and found issues:",
+            criticResult.summary,
+            ...(criticResult.issues ?? []).map(
+              (issue) =>
+                `  [${issue.severity}] ${issue.criterion}: ${issue.description}` +
+                (issue.suggestion ? ` (fix: ${issue.suggestion})` : ""),
+            ),
+          ].join("\n");
+
+          const retryPrompt = buildTaskEnrichmentPrompt({
+            app: appDefaults,
+            plan,
+            targetTaskId: planTask.id,
+            taskDefaults,
+            assets: { "Critic Feedback": criticFeedback },
+          });
+
+          const retryResult = await d.invokeAgent({
+            prompt: retryPrompt,
+            cwd: d.targetRepoRoot,
+            model: "sonnet",
+          });
+
+          if (retryResult.success) {
+            try {
+              const retryYaml = extractYaml(retryResult.stdout);
+              taskSpec = TaskSpecSchema.parse(parse(retryYaml));
+              d.log.info(`Re-enrichment succeeded for ${planTask.id}`);
+            } catch (err) {
+              d.log.warn(
+                `Re-enrichment parse failed for ${planTask.id}, using original spec: ${String(err)}`,
+              );
+            }
+          } else {
+            d.log.warn(`Re-enrichment agent failed for ${planTask.id}, using original spec`);
           }
         } else {
-          d.log.warn(`Re-enrichment agent failed for ${planTask.id}, using original spec`);
+          d.log.info(`Critic approved ${planTask.id}`);
         }
-      } else {
-        d.log.info(`Critic approved ${planTask.id}`);
       }
+
+      const taskPath = resolve(tasksDir, `${planTask.id}.yaml`);
+      await d.writeFile(taskPath, stringify(taskSpec));
+      d.log.info(`Task written to ${taskPath}`);
     }
 
-    const taskPath = resolve(tasksDir, `${planTask.id}.yaml`);
-    await d.writeFile(taskPath, stringify(taskSpec));
-    d.log.info(`Task written to ${taskPath}`);
-  }
-
-  if (opts.stopAfter === "tasks") {
-    d.log.info("Stopping after task generation (--stop-after tasks)");
-    return true;
+    if (opts.stopAfter === "tasks") {
+      d.log.info("Stopping after task generation (--stop-after tasks)");
+      return true;
+    }
   }
 
   // ─── Phase 3: Task Execution ───────────────────────────────────
