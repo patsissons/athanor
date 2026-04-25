@@ -76,6 +76,7 @@ export function buildEvaluatorPrompt(opts: {
   lines.push("");
   lines.push("- Set `passed: true` ONLY if every acceptance criterion is fully met.");
   lines.push("- Include an issue for every criterion that is not met or partially met.");
+  lines.push("- `severity` must be exactly one of: `critical`, `major`, or `minor`.");
   lines.push("- The `criterion` field must quote the acceptance criterion text verbatim.");
   lines.push(
     "- Do NOT output anything before or after the YAML. Your entire response must be valid YAML.",
@@ -182,6 +183,7 @@ export function buildInteractiveEvaluatorPrompt(opts: {
   lines.push("");
   lines.push("- Set `passed: true` ONLY if every acceptance criterion is fully met.");
   lines.push("- Include an issue for every criterion that is not met or partially met.");
+  lines.push("- `severity` must be exactly one of: `critical`, `major`, or `minor`.");
   lines.push("- The `criterion` field must quote the acceptance criterion text verbatim.");
   lines.push(
     "- Do NOT output anything before or after the YAML. Your entire response must be valid YAML.",
@@ -194,7 +196,7 @@ const EVAL_RESULT_SHAPE = `\
 passed: false
 score: 65
 issues:
-  - severity: critical
+  - severity: critical   # must be one of: critical, major, minor
     criterion: "The exact acceptance criterion text"
     description: "What is wrong or missing"
     suggestion: "How to fix it"
@@ -259,6 +261,7 @@ export function buildEnrichmentCriticPrompt(opts: {
   lines.push("```");
   lines.push("");
   lines.push("- Set `passed: true` if the spec is good enough to send to a coding agent as-is.");
+  lines.push("- `severity` must be exactly one of: `critical`, `major`, or `minor`.");
   lines.push(
     "- Do NOT output anything before or after the YAML. Your entire response must be valid YAML.",
   );
@@ -269,7 +272,7 @@ export function buildEnrichmentCriticPrompt(opts: {
 const CRITIC_RESULT_SHAPE = `\
 passed: false
 issues:
-  - severity: critical
+  - severity: critical   # must be one of: critical, major, minor
     criterion: "Acceptance criteria quality"
     description: "Criterion 2 is vague — 'works correctly' is not testable"
     suggestion: "Rewrite as: 'Returns a 200 status with JSON body containing items array'"
