@@ -133,7 +133,23 @@ export async function runPlan(
   const tasksDir = resolve(d.targetRepoRoot, ".athanor", "tasks", plan.id);
   await d.mkdir(tasksDir);
 
+  // Check which tasks already have YAML files so we can skip them
+  let existingFiles: string[] = [];
+  try {
+    existingFiles = await d.readdir(tasksDir);
+  } catch {
+    // Directory may not exist yet; treat as empty.
+  }
+  const existingTaskIds = new Set(
+    existingFiles.filter((f) => f.endsWith(".yaml")).map((f) => f.replace(/\.yaml$/, "")),
+  );
+
   for (const planTask of plan.tasks) {
+    if (existingTaskIds.has(planTask.id)) {
+      d.log.info(`Skipping already created task: ${planTask.id}`);
+      continue;
+    }
+
     d.log.info(`Enriching task: ${planTask.id}`);
     const prompt = buildTaskEnrichmentPrompt({
       app: appDefaults,

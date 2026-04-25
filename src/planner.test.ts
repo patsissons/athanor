@@ -170,6 +170,29 @@ describe("runPlan", () => {
       await runPlan({ prompt: "test", stopAfter: "tasks" }, deps);
     });
 
+    it("skips tasks that already have YAML files", async () => {
+      let callCount = 0;
+      const deps = makeDeps({
+        invokeAgent: vi.fn(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return { success: true, stdout: stringify(samplePlan), stderr: "", parsed: null };
+          }
+          return { success: true, stdout: stringify(sampleTask), stderr: "", parsed: null };
+        }),
+        // First task already exists on disk
+        readdir: vi.fn(async () => ["add-favorites-page.yaml"]),
+      });
+
+      const ok = await runPlan({ prompt: "Add favorites", stopAfter: "tasks" }, deps);
+
+      expect(ok).toBe(true);
+      // 1 plan + 1 task enrichment (second task only, first skipped)
+      expect(deps.invokeAgent).toHaveBeenCalledTimes(2);
+      // Plan write + 1 task write
+      expect(deps.writeFile).toHaveBeenCalledTimes(2);
+    });
+
     it("fails if any task enrichment fails", async () => {
       let callCount = 0;
       const { logger, messages } = makeLogger();
