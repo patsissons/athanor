@@ -97,7 +97,16 @@ export class Worktree {
 
   async commitAll(message: string): Promise<void> {
     await this.git(["add", "-A"], this.path);
-    await this.git(["commit", "-m", message], this.path);
+    try {
+      await this.git(["commit", "-m", message], this.path);
+    } catch (err) {
+      // "nothing to commit" exits 1 — that's fine if the agent already committed.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("nothing to commit")) {
+        return;
+      }
+      throw err;
+    }
   }
 
   async push(): Promise<void> {
