@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://www.schemastore.org/any.json
+id: add-demo-page
+title: Add a demo page
+description: |
+  Create a /demo route that displays a demo page.
+  The page should display a simple whimsical welcome message and a button that says "Don't Click me".
+  When the button is clicked, the page should display a "Why did you click the button?" message.
+
+allowedPaths:
+  - "src/app/demo/**"
+  - "src/lib/components/**"
+
+acceptanceCriteria:
+  - "A /demo route exists and renders"
+  - "The page displays a welcome message"
+  - "The page displays a 'Don't Click me' button"
+  - "When the 'Don't Click me' button is clicked, the page displays a 'Why did you click the button?' message"
+  - "Tailwind classes used for styling, no custom CSS files added"

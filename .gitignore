@@ -1,0 +1,10 @@
+# node
+node_modules
+
+# runtime
+.worktrees/
+runs/
+
+# env
+.env
+.env.local

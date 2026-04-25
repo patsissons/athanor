@@ -1,0 +1,17 @@
+# yaml-language-server: $schema=https://www.schemastore.org/any.json
+forbiddenPaths: ["package-lock.json", "package.json"]
+
+gates:
+  - name: format
+    command: "npm run format:check"
+  - name: lint
+    command: "npm run lint"
+  - name: typecheck
+    command: "npm run typecheck"
+  - name: test
+    command: "npm test -- --passWithNoTests"
+  - name: e2e
+    command: "npm run test:e2e"
+
+maxAgentAttempts: 2
+model: sonnet
