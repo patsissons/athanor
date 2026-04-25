@@ -147,11 +147,6 @@ async function appendCompletedTask(
   const section = `## ${taskId}: ${taskTitle}\n\n${summary}\n`;
   const updated = existing ? `${existing.trimEnd()}\n\n${section}` : section;
   await writeFile(summaryPath, updated);
-
-  await execa("git", ["add", join(".athanor", "completed-tasks.md")], { cwd: targetRepoRoot });
-  await execa("git", ["commit", "-m", `chore: update completed-tasks.md for ${taskId}`], {
-    cwd: targetRepoRoot,
-  });
 }
 
 export async function runTask(
