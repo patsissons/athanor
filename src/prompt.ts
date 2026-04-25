@@ -65,7 +65,9 @@ export function buildPrompt(opts: {
   lines.push("- Follow conventions in CLAUDE.md.");
   lines.push("- Make the minimum change needed. Do not refactor unrelated code.");
   lines.push("- When finished, your code must pass all gates above.");
-  lines.push("- Do not run the gates yourself; the harness will run them.");
+  lines.push(
+    "- Run the gate commands yourself before finishing and fix any errors. The harness will also run them to formally verify.",
+  );
   lines.push(
     "- When you are done, conclude your response with a concise summary of what you implemented inside <task-summary>...</task-summary> XML tags.",
   );
