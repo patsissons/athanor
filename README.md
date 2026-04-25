@@ -16,10 +16,10 @@ A harness for driving Claude Code to implement features against well-defined tas
 
    ```bash
    cd /path/to/my-project
-   mkdir -p tasks
+   mkdir -p .athanor/tasks
    ```
 
-   **`tasks/app.yaml`** — identifies your project to the harness:
+   **`.athanor/app.yaml`** — identifies your project to the harness:
 
    ```yaml
    id: my-app
@@ -27,7 +27,7 @@ A harness for driving Claude Code to implement features against well-defined tas
    description: A short description of what this project does.
    ```
 
-   **`tasks/my-first-task.yaml`** — describes the work you want done:
+   **`.athanor/tasks/my-first-task.yaml`** — describes the work you want done:
 
    ```yaml
    id: my-first-task
@@ -42,7 +42,7 @@ A harness for driving Claude Code to implement features against well-defined tas
      - "The feature works as described"
    ```
 
-   See `tasks/example.yaml` in the Athanor repo for a fully annotated example with all available fields.
+   See `.athanor/tasks/example.yaml` after running `athanor init` for a fully annotated example with all available fields.
 
 3. **Run the task:**
 
@@ -81,7 +81,7 @@ All examples below use `athanor` directly, but `npm run harness --` works identi
 ## Commands
 
 ```bash
-# scaffold tasks/ directory in a new project (interactive wizard)
+# scaffold .athanor/ directory in a new project (interactive wizard)
 athanor init
 
 # plan + enrich + execute from a prompt
@@ -97,10 +97,10 @@ athanor plan "Add favorites" --stop-after tasks
 athanor plan "Add favorites" --enrichment-critic
 
 # resume from an existing plan (skip plan generation)
-athanor plan --from-plan plans/add-favorites.yaml
+athanor plan --from-plan .athanor/plans/add-favorites.yaml
 
 # run a single task directly
-athanor run tasks/add-demo-page.yaml [--debug]
+athanor run .athanor/tasks/add-demo-page.yaml [--debug]
 
 # clean up old worktrees
 athanor clean --all
@@ -116,10 +116,10 @@ Plan mode is a three-phase pipeline. Each phase is independently stoppable via `
 
 ```
 Phase 1: Plan Generation (Opus)
-  prompt  ──→  planning agent  ──→  plans/{plan-id}.yaml
+  prompt  ──→  planning agent  ──→  .athanor/plans/{plan-id}.yaml
 
 Phase 2: Task Enrichment (Sonnet) + optional Critic (Opus)
-  plan + app config + defaults  ──→  enrichment agent (per task)  ──→  tasks/{plan-id}/{task-id}.yaml
+  plan + app config + defaults  ──→  enrichment agent (per task)  ──→  .athanor/tasks/{plan-id}/{task-id}.yaml
                                           ↑                                      │
                                           └── feedback ── critic (single-pass) ←─┘
 
@@ -131,8 +131,8 @@ The harness owns all context assembly. Agents never read YAML files — they rec
 
 - The full plan (all tasks in execution order, plan name/description)
 - The specific task to enrich (marked in the task list)
-- App-level configuration and guidelines (from `tasks/app.yaml`)
-- Task defaults (from `tasks/task.default.yaml`)
+- App-level configuration and guidelines (from `.athanor/app.yaml`)
+- Task defaults (from `.athanor/task.default.yaml`)
 - Optional assets (extensible context the harness can inject)
 
 When `--enrichment-critic` is enabled, each enriched task spec is reviewed by a single-pass critic (Opus by default) that checks for concrete acceptance criteria, tight `allowedPaths`, scope overlap with sibling tasks, and other quality signals. If the critic rejects, the enrichment agent re-enriches with the critic's feedback as an asset. This is a lightweight adversarial loop that improves task spec quality before execution begins.
@@ -161,47 +161,47 @@ The agent is invoked at the `[agent]` nodes. Everything else is plain TypeScript
 
 ## Modules
 
-| File                       | Purpose                                                           |
-| -------------------------- | ----------------------------------------------------------------- |
-| `src/cli.ts`               | Commander-based CLI (`run`, `plan`, `clean`, `init`)              |
-| `src/init.ts`              | Interactive scaffolding wizard using @clack/prompts               |
-| `src/planner.ts`           | Three-phase plan pipeline (generate, enrich, execute)             |
-| `src/plan-prompt.ts`       | Prompt construction for plan generation and task enrichment       |
-| `src/orchestrator.ts`      | Single-task execution blueprint (worktree, agent, gates, retry)   |
-| `src/app-spec.ts`          | Zod schema for `tasks/app.yaml` (identity, guidelines, devServer) |
-| `src/plan-spec.ts`         | Zod schema for plan YAML files                                    |
-| `src/task-spec.ts`         | Zod schema for task YAML files                                    |
-| `src/eval-spec.ts`         | Zod schemas for evaluator config, results, and dev server config  |
-| `src/evaluator.ts`         | Evaluator agent invocation (diff-review and interactive modes)    |
-| `src/evaluator-prompt.ts`  | Prompt construction for evaluator and enrichment critic           |
-| `src/enrichment-critic.ts` | Single-pass critic for task spec quality review                   |
-| `src/dev-server.ts`        | Dev server lifecycle for interactive evaluator mode               |
-| `src/merge-dev-server.ts`  | Inherits app-level devServer into task evaluator config           |
-| `src/plan-defaults.ts`     | Loaders for app, plan, and task default files                     |
-| `src/load-defaults.ts`     | Generic YAML defaults loader (graceful on missing files)          |
-| `src/prompt.ts`            | Prompt construction for task execution                            |
-| `src/agent.ts`             | Claude Code invocation, with optional MCP and stream-json support |
-| `src/worktree.ts`          | Git worktree lifecycle (create, changedFiles, diff, commit, push) |
-| `src/gates.ts`             | Subprocess-based validation gates with truncated output           |
-| `src/path-policy.ts`       | Allowed/forbidden path enforcement                                |
-| `src/yaml-extract.ts`      | YAML extraction from agent output (handles markdown fences)       |
-| `src/paths.ts`             | Harness root + target repo root resolution                        |
-| `src/clean.ts`             | Worktree and branch cleanup                                       |
-| `src/logger.ts`            | File + stdout logging, colorized                                  |
+| File                       | Purpose                                                              |
+| -------------------------- | -------------------------------------------------------------------- |
+| `src/cli.ts`               | Commander-based CLI (`run`, `plan`, `clean`, `init`)                 |
+| `src/init.ts`              | Interactive scaffolding wizard using @clack/prompts                  |
+| `src/planner.ts`           | Three-phase plan pipeline (generate, enrich, execute)                |
+| `src/plan-prompt.ts`       | Prompt construction for plan generation and task enrichment          |
+| `src/orchestrator.ts`      | Single-task execution blueprint (worktree, agent, gates, retry)      |
+| `src/app-spec.ts`          | Zod schema for `.athanor/app.yaml` (identity, guidelines, devServer) |
+| `src/plan-spec.ts`         | Zod schema for plan YAML files                                       |
+| `src/task-spec.ts`         | Zod schema for task YAML files                                       |
+| `src/eval-spec.ts`         | Zod schemas for evaluator config, results, and dev server config     |
+| `src/evaluator.ts`         | Evaluator agent invocation (diff-review and interactive modes)       |
+| `src/evaluator-prompt.ts`  | Prompt construction for evaluator and enrichment critic              |
+| `src/enrichment-critic.ts` | Single-pass critic for task spec quality review                      |
+| `src/dev-server.ts`        | Dev server lifecycle for interactive evaluator mode                  |
+| `src/merge-dev-server.ts`  | Inherits app-level devServer into task evaluator config              |
+| `src/plan-defaults.ts`     | Loaders for app, plan, and task default files                        |
+| `src/load-defaults.ts`     | Generic YAML defaults loader (graceful on missing files)             |
+| `src/prompt.ts`            | Prompt construction for task execution                               |
+| `src/agent.ts`             | Claude Code invocation, with optional MCP and stream-json support    |
+| `src/worktree.ts`          | Git worktree lifecycle (create, changedFiles, diff, commit, push)    |
+| `src/gates.ts`             | Subprocess-based validation gates with truncated output              |
+| `src/path-policy.ts`       | Allowed/forbidden path enforcement                                   |
+| `src/yaml-extract.ts`      | YAML extraction from agent output (handles markdown fences)          |
+| `src/paths.ts`             | Harness root + target repo root resolution                           |
+| `src/clean.ts`             | Worktree and branch cleanup                                          |
+| `src/logger.ts`            | File + stdout logging, colorized                                     |
 
 ## Configuration files
 
-These files live in the **target repository** (not the harness):
+These files live in the **target repository's `.athanor/` directory** (not the harness):
 
-| File                      | Purpose                                                                                                                                                                                                                           |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tasks/app.yaml`          | App-level identity, guidelines, and dev server config. Fields: `id`, `title`, optional `description`, `guidelines`, and `devServer`. When `devServer` is set, the planner automatically uses interactive evaluation for UI tasks. |
-| `tasks/task.default.yaml` | Default values for task specs (gates, forbidden paths, model, etc.). Merged under every task at load time.                                                                                                                        |
-| `tasks/example.yaml`      | Example standalone task spec for reference.                                                                                                                                                                                       |
+| File                          | Purpose                                                                                                                                                                                                                           |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.athanor/app.yaml`           | App-level identity, guidelines, and dev server config. Fields: `id`, `title`, optional `description`, `guidelines`, and `devServer`. When `devServer` is set, the planner automatically uses interactive evaluation for UI tasks. |
+| `.athanor/task.default.yaml`  | Default values for task specs (gates, forbidden paths, model, etc.). Merged under every task at load time.                                                                                                                        |
+| `.athanor/tasks/example.yaml` | Example standalone task spec (created by `athanor init`).                                                                                                                                                                         |
 
 ## Task spec
 
-See `tasks/example.yaml`. The schema is defined in `src/task-spec.ts`. Every field exists to reduce the agent's degrees of freedom:
+See `.athanor/tasks/example.yaml` (created by `athanor init`). The schema is defined in `src/task-spec.ts`. Every field exists to reduce the agent's degrees of freedom:
 
 - `description` and `acceptanceCriteria` appear verbatim in the prompt.
 - `allowedPaths` / `forbiddenPaths` are enforced as deterministic nodes, not just stated in the prompt.
@@ -226,12 +226,12 @@ See `tasks/example.yaml`. The schema is defined in `src/task-spec.ts`. Every fie
 ### Via plan mode (recommended)
 
 1. Run `npm run harness -- plan "your feature description" --stop-after tasks` to generate task specs from a prompt.
-2. Review the generated specs in `tasks/{plan-id}/`.
-3. Run `npm run harness -- plan --from-plan plans/{plan-id}.yaml` to execute.
+2. Review the generated specs in `.athanor/tasks/{plan-id}/`.
+3. Run `npm run harness -- plan --from-plan .athanor/plans/{plan-id}.yaml` to execute.
 
 ### Manually
 
-1. Write a YAML file in `tasks/` following the shape of `example.yaml`.
+1. Write a YAML file in `.athanor/tasks/` following the shape of `example.yaml`.
 2. Keep `allowedPaths` as tight as you can. The narrower the scope, the fewer surprises.
 3. Make acceptance criteria concrete and testable. "Looks good" is not a criterion. "Route exists, table renders 3 rows with columns X, Y, Z" is.
 4. Run with `--debug` the first time so you can watch the agent's reasoning.

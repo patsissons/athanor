@@ -57,7 +57,7 @@ export async function loadTaskSpec(path: string, targetRepoRoot?: string): Promi
   const raw = await readFile(path, "utf8");
   const parsed = parse(raw);
   if (targetRepoRoot) {
-    const defaultsPath = resolve(targetRepoRoot, "tasks", "task.default.yaml");
+    const defaultsPath = resolve(targetRepoRoot, ".athanor", "task.default.yaml");
     const defaults = await loadDefaults(defaultsPath, TaskSpecSchema.partial());
     const merged = { ...defaults, ...parsed };
     return TaskSpecSchema.parse(merged);

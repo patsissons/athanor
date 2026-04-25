@@ -1,4 +1,4 @@
-import { basename, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import * as p from "@clack/prompts";
@@ -38,7 +38,7 @@ function toTitleCase(kebab: string): string {
 export function buildScaffold(answers: InitAnswers): ScaffoldFile[] {
   const files: ScaffoldFile[] = [];
 
-  // ── tasks/app.yaml ─────────────────────────────────────────────
+  // ── .athanor/app.yaml ───────────────────────────────────────────
   const app: Record<string, unknown> = {
     id: answers.appId,
     title: answers.appTitle,
@@ -50,11 +50,11 @@ export function buildScaffold(answers: InitAnswers): ScaffoldFile[] {
     app.devServer = answers.devServer;
   }
   files.push({
-    relativePath: "tasks/app.yaml",
+    relativePath: ".athanor/app.yaml",
     content: YAML_HEADER + stringify(app),
   });
 
-  // ── tasks/task.default.yaml ────────────────────────────────────
+  // ── .athanor/task.default.yaml ──────────────────────────────────
   const taskDefault: Record<string, unknown> = {};
   if (answers.forbiddenPaths.length > 0) {
     taskDefault.forbiddenPaths = answers.forbiddenPaths;
@@ -65,11 +65,11 @@ export function buildScaffold(answers: InitAnswers): ScaffoldFile[] {
   taskDefault.maxAgentAttempts = 2;
   taskDefault.model = "sonnet";
   files.push({
-    relativePath: "tasks/task.default.yaml",
+    relativePath: ".athanor/task.default.yaml",
     content: YAML_HEADER + stringify(taskDefault),
   });
 
-  // ── tasks/example.yaml ─────────────────────────────────────────
+  // ── .athanor/tasks/example.yaml ─────────────────────────────────
   const example = {
     id: "example-task",
     title: "Example task",
@@ -83,7 +83,7 @@ export function buildScaffold(answers: InitAnswers): ScaffoldFile[] {
     ],
   };
   files.push({
-    relativePath: "tasks/example.yaml",
+    relativePath: ".athanor/tasks/example.yaml",
     content: YAML_HEADER + stringify(example),
   });
 
@@ -120,17 +120,17 @@ const FORBIDDEN_PATH_OPTIONS = [
 
 export async function runInit(): Promise<void> {
   const cwd = process.cwd();
-  const tasksDir = resolve(cwd, "tasks");
+  const athanorDir = resolve(cwd, ".athanor");
   const dirName = basename(cwd);
   const defaultId = toKebab(dirName);
   const defaultTitle = toTitleCase(defaultId);
 
   p.intro("athanor init");
 
-  // Check for existing tasks/ directory
-  if (existsSync(tasksDir)) {
+  // Check for existing .athanor/ directory
+  if (existsSync(athanorDir)) {
     const overwrite = await p.confirm({
-      message: "tasks/ directory already exists. Overwrite files?",
+      message: ".athanor/ directory already exists. Overwrite files?",
     });
     cancelAndExit(overwrite);
     if (!overwrite) {
@@ -242,7 +242,11 @@ export async function runInit(): Promise<void> {
 
   const s = p.spinner();
   s.start("Writing scaffold files...");
-  await mkdir(tasksDir, { recursive: true });
+  // Ensure .athanor/ and its subdirectories exist
+  const dirsNeeded = new Set(files.map((f) => dirname(resolve(cwd, f.relativePath))));
+  for (const dir of dirsNeeded) {
+    await mkdir(dir, { recursive: true });
+  }
   for (const f of files) {
     await writeFile(resolve(cwd, f.relativePath), f.content, "utf8");
   }
@@ -251,7 +255,7 @@ export async function runInit(): Promise<void> {
   p.note(files.map((f) => `  ${f.relativePath}`).join("\n"), "Created files");
 
   p.outro(
-    "Scaffolding complete! Edit tasks/example.yaml to define your first task, then run:\n" +
+    "Scaffolding complete! Edit .athanor/tasks/example.yaml to define your first task, then run:\n" +
       "  athanor run tasks/example.yaml",
   );
 }

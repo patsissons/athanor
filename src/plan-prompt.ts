@@ -141,7 +141,7 @@ export function buildPlanPrompt(userPrompt: string, app?: Partial<AppSpec>): str
 }
 
 export interface TaskEnrichmentContext {
-  /** App-level configuration (from tasks/app.yaml). */
+  /** App-level configuration (from .athanor/app.yaml). */
   app: Partial<AppSpec>;
   /** The full plan spec (all tasks, name, description). */
   plan: PlanSpec;

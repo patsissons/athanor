@@ -119,7 +119,7 @@ const defaultDeps: RunTaskDeps = {
 };
 
 async function loadCompletedTasks(targetRepoRoot: string): Promise<string | undefined> {
-  const summaryPath = resolve(targetRepoRoot, "tasks", "completed-tasks.md");
+  const summaryPath = resolve(targetRepoRoot, ".athanor", "completed-tasks.md");
   try {
     return await readFile(summaryPath, "utf8");
   } catch {
@@ -133,9 +133,9 @@ async function appendCompletedTask(
   taskTitle: string,
   summary: string,
 ): Promise<void> {
-  const tasksDir = resolve(targetRepoRoot, "tasks");
-  await mkdir(tasksDir, { recursive: true });
-  const summaryPath = join(tasksDir, "completed-tasks.md");
+  const athanorDir = resolve(targetRepoRoot, ".athanor");
+  await mkdir(athanorDir, { recursive: true });
+  const summaryPath = join(athanorDir, "completed-tasks.md");
 
   let existing = "";
   try {
@@ -148,7 +148,7 @@ async function appendCompletedTask(
   const updated = existing ? `${existing.trimEnd()}\n\n${section}` : section;
   await writeFile(summaryPath, updated);
 
-  await execa("git", ["add", join("tasks", "completed-tasks.md")], { cwd: targetRepoRoot });
+  await execa("git", ["add", join(".athanor", "completed-tasks.md")], { cwd: targetRepoRoot });
   await execa("git", ["commit", "-m", `chore: update completed-tasks.md for ${taskId}`], {
     cwd: targetRepoRoot,
   });
@@ -256,7 +256,7 @@ export async function runTask(
       if (task.evaluator.mode === "interactive" && !task.evaluator.devServer) {
         runtime.log.error(
           "Evaluator mode is 'interactive' but no devServer config found. " +
-            "Set devServer in the task spec or in tasks/app.yaml.",
+            "Set devServer in the task spec or in .athanor/app.yaml.",
         );
         return false;
       }

@@ -8,7 +8,7 @@ import { mergeAppDevServer } from "./merge-dev-server.js";
 import { setupLogging, log, enableDebug } from "./logger.js";
 import { runTask } from "./orchestrator.js";
 import { cleanWorktrees, type CleanOpts } from "./clean.js";
-import { harnessRoot, resolveTargetRepoRoot } from "./paths.js";
+import { harnessRoot, resolveTargetRepoRoot, resolveTaskFilePath } from "./paths.js";
 import { runPlan } from "./planner.js";
 
 const require = createRequire(import.meta.url);
@@ -37,7 +37,8 @@ program
       process.exit(1);
     }
 
-    let task = await loadTaskSpec(taskPath, targetRepoRoot);
+    const resolvedTaskPath = resolveTaskFilePath(taskPath, targetRepoRoot);
+    let task = await loadTaskSpec(resolvedTaskPath, targetRepoRoot);
     const appDefaults = await loadAppDefaults(targetRepoRoot);
     task = mergeAppDevServer(task, appDefaults);
     const runDir = resolve(harnessRoot, "runs", task.id);
@@ -88,7 +89,7 @@ program
 
       const ok = await runPlan({
         prompt,
-        fromPlan: opts.fromPlan,
+        fromPlan: opts.fromPlan ? resolveTaskFilePath(opts.fromPlan, targetRepoRoot) : undefined,
         stopAfter: opts.stopAfter as "plan" | "tasks" | undefined,
         targetRepoRoot,
         enrichmentCritic: opts.enrichmentCritic ? { enabled: true } : undefined,
@@ -127,7 +128,7 @@ program
 // ── init ─────────────────────────────────────────────────────────
 program
   .command("init")
-  .description("Scaffold tasks/ directory in the current repo")
+  .description("Scaffold .athanor/ directory in the current repo")
   .action(async () => {
     const { runInit } = await import("./init.js");
     await runInit();

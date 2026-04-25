@@ -35,15 +35,15 @@ describe("buildScaffold", () => {
 
     expect(files).toHaveLength(3);
     expect(files.map((f) => f.relativePath)).toEqual([
-      "tasks/app.yaml",
-      "tasks/task.default.yaml",
-      "tasks/example.yaml",
+      ".athanor/app.yaml",
+      ".athanor/task.default.yaml",
+      ".athanor/tasks/example.yaml",
     ]);
   });
 
   it("generates valid app.yaml with all fields", () => {
     const files = buildScaffold(fullAnswers());
-    const appFile = files.find((f) => f.relativePath === "tasks/app.yaml")!;
+    const appFile = files.find((f) => f.relativePath === ".athanor/app.yaml")!;
     const parsed = parse(appFile.content);
     const result = AppSpecSchema.parse(parsed);
 
@@ -60,7 +60,7 @@ describe("buildScaffold", () => {
 
   it("generates valid app.yaml without optional fields", () => {
     const files = buildScaffold(minimalAnswers());
-    const appFile = files.find((f) => f.relativePath === "tasks/app.yaml")!;
+    const appFile = files.find((f) => f.relativePath === ".athanor/app.yaml")!;
     const parsed = parse(appFile.content);
     const result = AppSpecSchema.parse(parsed);
 
@@ -72,7 +72,7 @@ describe("buildScaffold", () => {
 
   it("generates task.default.yaml with gates and forbidden paths", () => {
     const files = buildScaffold(fullAnswers());
-    const defaultFile = files.find((f) => f.relativePath === "tasks/task.default.yaml")!;
+    const defaultFile = files.find((f) => f.relativePath === ".athanor/task.default.yaml")!;
     const parsed = parse(defaultFile.content);
 
     expect(parsed.gates).toEqual([
@@ -86,7 +86,7 @@ describe("buildScaffold", () => {
 
   it("generates task.default.yaml without gates when none selected", () => {
     const files = buildScaffold(minimalAnswers());
-    const defaultFile = files.find((f) => f.relativePath === "tasks/task.default.yaml")!;
+    const defaultFile = files.find((f) => f.relativePath === ".athanor/task.default.yaml")!;
     const parsed = parse(defaultFile.content);
 
     expect(parsed.gates).toBeUndefined();
@@ -97,7 +97,7 @@ describe("buildScaffold", () => {
 
   it("generates example.yaml with expected structure", () => {
     const files = buildScaffold(fullAnswers());
-    const exampleFile = files.find((f) => f.relativePath === "tasks/example.yaml")!;
+    const exampleFile = files.find((f) => f.relativePath === ".athanor/tasks/example.yaml")!;
     const parsed = parse(exampleFile.content);
 
     expect(parsed.id).toBe("example-task");
@@ -109,7 +109,7 @@ describe("buildScaffold", () => {
 
   it("example.yaml parses against partial TaskSpecSchema", () => {
     const files = buildScaffold(fullAnswers());
-    const exampleFile = files.find((f) => f.relativePath === "tasks/example.yaml")!;
+    const exampleFile = files.find((f) => f.relativePath === ".athanor/tasks/example.yaml")!;
     const parsed = parse(exampleFile.content);
 
     // Example doesn't have gates (they come from task defaults), so parse as partial
@@ -127,7 +127,7 @@ describe("buildScaffold", () => {
   it("omits devServer from app.yaml when hasDevServer is false", () => {
     const answers = { ...fullAnswers(), hasDevServer: false, devServer: undefined };
     const files = buildScaffold(answers);
-    const appFile = files.find((f) => f.relativePath === "tasks/app.yaml")!;
+    const appFile = files.find((f) => f.relativePath === ".athanor/app.yaml")!;
     const parsed = parse(appFile.content);
 
     expect(parsed.devServer).toBeUndefined();

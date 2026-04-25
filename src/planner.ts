@@ -114,7 +114,7 @@ export async function runPlan(
       return false;
     }
 
-    const plansDir = resolve(d.targetRepoRoot, "plans");
+    const plansDir = resolve(d.targetRepoRoot, ".athanor", "plans");
     await d.mkdir(plansDir);
     const planPath = resolve(plansDir, `${plan.id}.yaml`);
     await d.writeFile(planPath, stringify(plan));
@@ -130,7 +130,7 @@ export async function runPlan(
   // ─── Phase 2: Task Generation ──────────────────────────────────
   d.log.info("Phase 2: Generating task specs with Sonnet");
   const taskDefaults = await d.loadTaskDefaults(d.targetRepoRoot);
-  const tasksDir = resolve(d.targetRepoRoot, "tasks", plan.id);
+  const tasksDir = resolve(d.targetRepoRoot, ".athanor", "tasks", plan.id);
   await d.mkdir(tasksDir);
 
   for (const planTask of plan.tasks) {

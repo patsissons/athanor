@@ -338,7 +338,7 @@ describe.concurrent("runTask e2e", () => {
       );
 
       expect(ok).toBe(true);
-      const summaryContent = await readRepoFile(repoRoot, "tasks/completed-tasks.md");
+      const summaryContent = await readRepoFile(repoRoot, ".athanor/completed-tasks.md");
       expect(summaryContent).toContain("## summary-smoke: Summary smoke test");
       expect(summaryContent).toContain("Updated ready flag to false.");
     } finally {
@@ -358,10 +358,10 @@ describe.concurrent("runTask e2e", () => {
         forbiddenPaths: ["package.json"],
       });
 
-      // Seed an existing tasks directory and summary file.
-      await mkdir(join(repoRoot, "tasks"), { recursive: true });
+      // Seed an existing .athanor directory and summary file.
+      await mkdir(join(repoRoot, ".athanor"), { recursive: true });
       await writeFile(
-        join(repoRoot, "tasks", "completed-tasks.md"),
+        join(repoRoot, ".athanor", "completed-tasks.md"),
         "## prior-task: Prior Task\n\nDid something useful.\n",
       );
 
@@ -381,7 +381,7 @@ describe.concurrent("runTask e2e", () => {
       );
 
       expect(ok).toBe(true);
-      const summaryContent = await readRepoFile(repoRoot, "tasks/completed-tasks.md");
+      const summaryContent = await readRepoFile(repoRoot, ".athanor/completed-tasks.md");
       expect(summaryContent).toContain("## prior-task: Prior Task");
       expect(summaryContent).toContain("## append-smoke: Append smoke test");
       expect(summaryContent).toContain("Appended a new task summary.");
