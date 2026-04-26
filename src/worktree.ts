@@ -11,6 +11,7 @@ export class Worktree {
   readonly path: string; // absolute path to the worktree root
 
   private readonly baseBranch?: string;
+  private startCommit?: string;
 
   constructor(
     targetRepoRoot: string,
@@ -35,7 +36,8 @@ export class Worktree {
       reject: false,
     });
     if (result.exitCode !== 0) {
-      throw new Error(`git ${args.join(" ")} failed (exit ${result.exitCode})\n${result.stderr}`);
+      const output = [result.stderr, result.stdout].filter(Boolean).join("\n");
+      throw new Error(`git ${args.join(" ")} failed (exit ${result.exitCode})\n${output}`);
     }
     return result.stdout;
   }
@@ -61,6 +63,10 @@ export class Worktree {
     } catch {
       await this.git(["worktree", "add", "-b", this.branch, this.path, `origin/${startPoint}`]);
     }
+
+    // Record the starting commit so diff() can compare against it even if
+    // the agent commits during execution.
+    this.startCommit = (await this.git(["rev-parse", "HEAD"], this.path)).trim();
 
     return this.path;
   }
@@ -121,19 +127,37 @@ export class Worktree {
   /**
    * All files changed in the worktree, returned as paths relative to the
    * worktree root (so they can be matched against allowedPaths globs from
-   * the task spec).
+   * the task spec).  Includes both uncommitted changes and changes committed
+   * by the agent since the worktree was created.
    */
   async changedFiles(): Promise<string[]> {
-    const out = await this.git(["status", "--porcelain", "-uall"], this.path);
-    return parseChangedFiles(out);
+    // Uncommitted changes
+    const statusOut = await this.git(["status", "--porcelain", "-uall"], this.path);
+    const uncommitted = parseChangedFiles(statusOut);
+
+    // Files changed in commits since the worktree was created
+    let committed: string[] = [];
+    if (this.startCommit) {
+      const diffOut = await this.git(["diff", "--name-only", this.startCommit, "HEAD"], this.path);
+      committed = diffOut
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+    }
+
+    return [...new Set([...uncommitted, ...committed])];
   }
 
   /**
-   * Unified diff of all changes in the worktree (staged + unstaged)
-   * relative to HEAD.
+   * Unified diff of all changes in the worktree relative to the starting
+   * commit.  Captures both agent-committed changes and any remaining
+   * uncommitted changes.
    */
   async diff(): Promise<string> {
-    return this.git(["diff", "HEAD"], this.path);
+    // If the agent committed changes, `git diff HEAD` would be empty.
+    // Diff against the starting commit to capture everything.
+    const base = this.startCommit ?? "HEAD";
+    return this.git(["diff", base], this.path);
   }
 }
 

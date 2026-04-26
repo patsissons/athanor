@@ -254,6 +254,11 @@ export async function runTask(
 
     runtime.log.info("All gates passed");
 
+    // ─── DETERMINISTIC NODE: commit all changes ─────────────────
+    // Commit before the evaluator so the diff is accurate and no
+    // changes are lost when chaining tasks in plan mode.
+    await wt.commitAll(`${task.title}\n\nTask: ${task.id}`);
+
     // ─── AGENT NODE: evaluator (optional) ────────────────────────
     if (task.evaluator?.enabled) {
       if (task.evaluator.mode === "interactive" && !task.evaluator.devServer) {
@@ -286,10 +291,6 @@ export async function runTask(
     // ─── DETERMINISTIC NODE: record completed task summary ──────
     const summary = lastSummary ?? `Completed task: ${task.title}`;
     await runtime.appendCompletedTask(opts.targetRepoRoot, task.id, task.title, summary);
-    runtime.log.debug("Updated completed-tasks.md");
-
-    // ─── DETERMINISTIC NODE: commit + push ─────────────────────
-    await wt.commitAll(`${task.title}\n\nTask: ${task.id}`);
     if (opts.push !== false) {
       try {
         await wt.push();

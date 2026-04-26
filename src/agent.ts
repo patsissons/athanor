@@ -57,6 +57,7 @@ export async function invokeClaudeCode(opts: {
     reject: false,
     timeout: timeoutSeconds * 1000,
     buffer: true,
+    stdin: "ignore",
   });
 
   // Collect the result text from the final stream event while printing

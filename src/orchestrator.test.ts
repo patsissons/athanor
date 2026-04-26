@@ -427,7 +427,10 @@ describe("runTask", () => {
     const result = await runTask(task, taskOpts, runtime.deps);
 
     expect(result.success).toBe(false);
-    expect(runtime.worktree.commitAll).not.toHaveBeenCalled();
+    // commitAll runs before the evaluator (to ensure clean diff), but
+    // push should not happen since the task ultimately failed.
+    expect(runtime.worktree.commitAll).toHaveBeenCalled();
+    expect(runtime.worktree.push).not.toHaveBeenCalled();
   });
 
   it("returns branch in result on success", async () => {
