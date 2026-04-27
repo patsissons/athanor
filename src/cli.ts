@@ -51,32 +51,21 @@ program
 // ── plan ─────────────────────────────────────────────────────────
 program
   .command("plan")
-  .description("Run the three-phase plan pipeline")
-  .argument("[prompt]", "The planning prompt")
+  .description("Generate a plan and enrich task specs")
+  .argument("<prompt>", "The planning prompt")
   .option("--stop-after <phase>", "Stop after phase (plan or tasks)")
-  .option("--from-plan <path>", "Resume from existing plan file")
-  .option("--start-at <task-id>", "Resume execution at a specific task")
   .option("--enrichment-critic", "Enable enrichment critic for task specs")
+  .option("--run-plan", "Automatically execute the plan after generation")
   .action(
     async (
-      prompt: string | undefined,
-      opts: { stopAfter?: string; fromPlan?: string; startAt?: string; enrichmentCritic?: boolean },
+      prompt: string,
+      opts: { stopAfter?: string; enrichmentCritic?: boolean; runPlan?: boolean },
       cmd: Command,
     ) => {
       if (cmd.optsWithGlobals().debug) enableDebug();
 
       if (opts.stopAfter && opts.stopAfter !== "plan" && opts.stopAfter !== "tasks") {
         console.error("--stop-after must be 'plan' or 'tasks'");
-        process.exit(1);
-      }
-
-      if (!prompt && !opts.fromPlan) {
-        console.error("Either a prompt or --from-plan is required");
-        process.exit(1);
-      }
-
-      if (opts.startAt && !opts.fromPlan) {
-        console.error("--start-at requires --from-plan");
         process.exit(1);
       }
 
@@ -93,17 +82,58 @@ program
       const logFile = await setupLogging(runDir);
       log.info(`Logging to ${logFile}`);
 
-      const ok = await runPlan({
+      const result = await runPlan({
         prompt,
-        fromPlan: opts.fromPlan ? resolveTaskFilePath(opts.fromPlan, targetRepoRoot) : undefined,
         stopAfter: opts.stopAfter as "plan" | "tasks" | undefined,
-        startAt: opts.startAt,
         targetRepoRoot,
         enrichmentCritic: opts.enrichmentCritic ? { enabled: true } : undefined,
       });
-      process.exit(ok ? 0 : 1);
+
+      if (!result.success) {
+        process.exit(1);
+      }
+
+      if (opts.runPlan && result.planPath) {
+        const { runPlanExecution } = await import("./run-plan.js");
+        const ok = await runPlanExecution(result.planPath, { targetRepoRoot, harnessRoot });
+        process.exit(ok ? 0 : 1);
+      }
+
+      process.exit(0);
     },
   );
+
+// ── run-plan ────────────────────────────────────────────────────
+program
+  .command("run-plan")
+  .description("Execute tasks from a plan file sequentially")
+  .argument("<plan-path>", "Path to plan YAML file")
+  .option("--push", "Push the branch after all tasks complete")
+  .action(async (planPath: string, opts: { push?: boolean }, cmd: Command) => {
+    if (cmd.optsWithGlobals().debug) enableDebug();
+
+    let targetRepoRoot: string;
+    try {
+      targetRepoRoot = await resolveTargetRepoRoot(process.cwd());
+    } catch (err) {
+      console.error(String(err instanceof Error ? err.message : err));
+      process.exit(1);
+    }
+
+    const resolvedPlanPath = resolveTaskFilePath(planPath, targetRepoRoot);
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const runDir = resolve(harnessRoot, "runs", `run-plan-${ts}`);
+    const logFile = await setupLogging(runDir);
+    log.info(`Logging to ${logFile}`);
+
+    const { runPlanExecution } = await import("./run-plan.js");
+    const ok = await runPlanExecution(resolvedPlanPath, {
+      targetRepoRoot,
+      harnessRoot,
+      push: opts.push,
+    });
+    process.exit(ok ? 0 : 1);
+  });
 
 // ── clean ────────────────────────────────────────────────────────
 program

@@ -36,11 +36,12 @@ describe("buildPrompt", () => {
   });
 
   it("includes completed tasks context when present", () => {
-    const taskWithHistory = TaskSpecSchema.parse({
-      ...task,
+    const prompt = buildPrompt({
+      task,
+      attempt: 1,
+      priorFailure: null,
       completedTasks: "## prior-task: Prior Task\n\nDid something useful.\n",
     });
-    const prompt = buildPrompt({ task: taskWithHistory, attempt: 1, priorFailure: null });
 
     expect(prompt).toContain("## Previously completed tasks");
     expect(prompt).toContain("## prior-task: Prior Task");

@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 export class Worktree {
   readonly targetRepoRoot: string;
   readonly harnessRoot: string;
-  readonly taskId: string;
+  readonly identifier: string;
   readonly runId: string;
   readonly branch: string;
   readonly path: string; // absolute path to the worktree root
@@ -16,18 +16,18 @@ export class Worktree {
   constructor(
     targetRepoRoot: string,
     harnessRoot: string,
-    taskId: string,
+    identifier: string,
     runId: string,
     baseBranch?: string,
   ) {
     this.targetRepoRoot = resolve(targetRepoRoot);
     this.harnessRoot = resolve(harnessRoot);
-    this.taskId = taskId;
+    this.identifier = identifier;
     this.runId = runId;
     this.baseBranch = baseBranch;
-    this.branch = `athanor/${taskId}/${runId}`;
+    this.branch = `athanor/${identifier}/${runId}`;
     // Worktrees live at the harness root under .worktrees/.
-    this.path = resolve(this.harnessRoot, `.worktrees/${taskId}-${runId}`);
+    this.path = resolve(this.harnessRoot, `.worktrees/${identifier}-${runId}`);
   }
 
   private async git(args: string[], cwd?: string): Promise<string> {

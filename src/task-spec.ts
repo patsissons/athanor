@@ -45,9 +45,6 @@ export const TaskSpecSchema = z.object({
   // Uses base schema (no refinement) so interactive mode can omit devServer
   // at parse time — app-level devServer is merged before execution.
   evaluator: EvaluatorConfigBaseSchema.optional(),
-
-  // Previously completed tasks summary (injected by the harness at runtime).
-  completedTasks: z.string().optional(),
 });
 
 export type ValidationGate = z.infer<typeof ValidationGateSchema>;

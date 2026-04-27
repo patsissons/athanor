@@ -84,7 +84,7 @@ All examples below use `athanor` directly, but `npm run harness --` works identi
 # scaffold .athanor/ directory in a new project (interactive wizard)
 athanor init
 
-# plan + enrich + execute from a prompt
+# plan + enrich from a prompt
 athanor plan "Add a favorites feature"
 
 # plan only (generate the plan YAML)
@@ -96,8 +96,12 @@ athanor plan "Add favorites" --stop-after tasks
 # plan with enrichment critic (adversarial task spec review)
 athanor plan "Add favorites" --enrichment-critic
 
-# resume from an existing plan (skip plan generation)
-athanor plan --from-plan .athanor/plans/add-favorites.yaml
+# plan + enrich + immediately execute all tasks
+athanor plan "Add favorites" --run-plan
+
+# execute all tasks from an existing plan
+athanor run-plan .athanor/plans/add-favorites.yaml
+athanor run-plan .athanor/plans/add-favorites.yaml --push
 
 # run a single task directly
 athanor run .athanor/tasks/add-demo-page.yaml [--debug]
@@ -112,7 +116,7 @@ athanor clean --dry-run --all
 
 ### Plan mode (`plan` subcommand)
 
-Plan mode is a three-phase pipeline. Each phase is independently stoppable via `--stop-after`.
+Plan mode is a two-phase pipeline. Each phase is independently stoppable via `--stop-after`. Use `--run-plan` to chain directly into execution after enrichment.
 
 ```
 Phase 1: Plan Generation (Opus)
@@ -122,9 +126,6 @@ Phase 2: Task Enrichment (Sonnet) + optional Critic (Opus)
   plan + app config + defaults  ──→  enrichment agent (per task)  ──→  .athanor/tasks/{plan-id}/{task-id}.yaml
                                           ↑                                      │
                                           └── feedback ── critic (single-pass) ←─┘
-
-Phase 3: Task Execution
-  task specs  ──→  orchestrator (per task)  ──→  worktree + commit
 ```
 
 The harness owns all context assembly. Agents never read YAML files — they receive their full context via prompts and produce YAML as output. The enrichment agent receives:
@@ -139,55 +140,82 @@ When `--enrichment-critic` is enabled, each enriched task spec is reviewed by a 
 
 ### Run mode (`run` subcommand)
 
-The orchestrator in `src/orchestrator.ts` executes a single task spec. Reading that file top to bottom is the fastest way to understand the execution model.
+The orchestrator in `src/orchestrator.ts` executes a single task spec. It delegates to the inner retry loop in `src/task-loop.ts`. Reading those files top to bottom is the fastest way to understand the execution model.
 
 ```
 [deterministic]  create worktree from main
 [deterministic]  npm ci inside worktree
-┌─── retry loop (bounded by task.maxAgentAttempts, default 2) ───┐
-│  [agent]        invoke Claude Code (cwd = worktree/)           │
-│  [deterministic] auto-format with Prettier                     │
-│  [deterministic] scope check: changed files ⊆ allowedPaths     │
-│  [deterministic] forbidden-paths check                         │
-│  [deterministic] run gates (lint, typecheck, test, ...)        │
-│  [agent]        evaluator review (optional, when enabled)      │
-│  [deterministic] if all checks pass: commit + push + exit OK   │
-│  [deterministic] if anything fails: feed output back, retry    │
-└────────────────────────────────────────────────────────────────┘
+┌─── retry loop (bounded by maxAgentAttempts, default 2, 3 with evaluator) ─┐
+│  [agent]        invoke Claude Code (cwd = worktree/)                      │
+│  [deterministic] auto-format with Prettier                                │
+│  [deterministic] scope check: changed files ⊆ allowedPaths                │
+│  [deterministic] forbidden-paths check                                    │
+│  [deterministic] run gates (lint, typecheck, test, ...)                   │
+│  [agent]        evaluator review (runs even when gates fail)              │
+│  [deterministic] if all checks pass: commit + exit OK                     │
+│  [deterministic] if anything fails: feed output back, retry               │
+└───────────────────────────────────────────────────────────────────────────┘
+[deterministic]  on success: push (if requested)
 [deterministic]  on exhaustion: leave worktree for human review
 ```
 
-The agent is invoked at the `[agent]` nodes. Everything else is plain TypeScript with subprocess exit codes.
+The agent is invoked at the `[agent]` nodes. Everything else is plain TypeScript with subprocess exit codes. Commits happen only after both gates and evaluator pass. The evaluator always runs (even on gate failure) so the agent gets comprehensive feedback on the next retry.
+
+### Run-plan mode (`run-plan` subcommand)
+
+Executes all tasks from a plan sequentially in a single worktree branch.
+
+```
+[deterministic]  load plan spec
+[deterministic]  pre-check: cross-reference completed-tasks.yaml with git history
+[deterministic]  create worktree on athanor/{planId}/{runId} branch
+[deterministic]  npm ci inside worktree
+┌─── outer task loop (from resume point) ────────────────────────────────┐
+│  [deterministic] load + merge task spec                                │
+│  [deterministic] build completed-tasks context from prior tasks        │
+│  ┌─── inner retry loop (via task-loop.ts) ──────────────────────────┐  │
+│  │  agent → format → paths → gates → eval → commit on full success  │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│  [deterministic] on success: append to .athanor/completed-tasks.yaml   │
+│  [deterministic] on failure: halt, leave worktree for human review     │
+└────────────────────────────────────────────────────────────────────────┘
+[deterministic]  on all tasks complete: push (if --push)
+```
+
+**Resumption:** `.athanor/completed-tasks.yaml` tracks completed task IDs locally (never committed). On restart, the harness cross-references this file with git history — both must agree for a task to be considered complete. Any mismatch is a hard failure with a clear error message. This ensures safe resume after crashes or interruptions.
 
 ## Modules
 
-| File                       | Purpose                                                              |
-| -------------------------- | -------------------------------------------------------------------- |
-| `src/cli.ts`               | Commander-based CLI (`run`, `plan`, `clean`, `init`)                 |
-| `src/init.ts`              | Interactive scaffolding wizard using @clack/prompts                  |
-| `src/planner.ts`           | Three-phase plan pipeline (generate, enrich, execute)                |
-| `src/plan-prompt.ts`       | Prompt construction for plan generation and task enrichment          |
-| `src/orchestrator.ts`      | Single-task execution blueprint (worktree, agent, gates, retry)      |
-| `src/app-spec.ts`          | Zod schema for `.athanor/app.yaml` (identity, guidelines, devServer) |
-| `src/plan-spec.ts`         | Zod schema for plan YAML files                                       |
-| `src/task-spec.ts`         | Zod schema for task YAML files                                       |
-| `src/eval-spec.ts`         | Zod schemas for evaluator config, results, and dev server config     |
-| `src/evaluator.ts`         | Evaluator agent invocation (diff-review and interactive modes)       |
-| `src/evaluator-prompt.ts`  | Prompt construction for evaluator and enrichment critic              |
-| `src/enrichment-critic.ts` | Single-pass critic for task spec quality review                      |
-| `src/dev-server.ts`        | Dev server lifecycle for interactive evaluator mode                  |
-| `src/merge-dev-server.ts`  | Inherits app-level devServer into task evaluator config              |
-| `src/plan-defaults.ts`     | Loaders for app, plan, and task default files                        |
-| `src/load-defaults.ts`     | Generic YAML defaults loader (graceful on missing files)             |
-| `src/prompt.ts`            | Prompt construction for task execution                               |
-| `src/agent.ts`             | Claude Code invocation, with optional MCP and stream-json support    |
-| `src/worktree.ts`          | Git worktree lifecycle (create, changedFiles, diff, commit, push)    |
-| `src/gates.ts`             | Subprocess-based validation gates with truncated output              |
-| `src/path-policy.ts`       | Allowed/forbidden path enforcement                                   |
-| `src/yaml-extract.ts`      | YAML extraction from agent output (handles markdown fences)          |
-| `src/paths.ts`             | Harness root + target repo root resolution                           |
-| `src/clean.ts`             | Worktree and branch cleanup                                          |
-| `src/logger.ts`            | File + stdout logging, colorized                                     |
+| File                       | Purpose                                                               |
+| -------------------------- | --------------------------------------------------------------------- |
+| `src/cli.ts`               | Commander-based CLI (`run`, `plan`, `run-plan`, `clean`, `init`)      |
+| `src/init.ts`              | Interactive scaffolding wizard using @clack/prompts                   |
+| `src/planner.ts`           | Two-phase plan pipeline (generate, enrich)                            |
+| `src/plan-prompt.ts`       | Prompt construction for plan generation and task enrichment           |
+| `src/orchestrator.ts`      | Single-task execution (worktree, npm install, delegates to task-loop) |
+| `src/task-loop.ts`         | Inner retry loop primitive (agent, gates, eval, commit)               |
+| `src/run-plan.ts`          | Sequential plan execution with pre-check and resume support           |
+| `src/completed-tasks.ts`   | Completed-tasks YAML schema, git scanning, cross-reference logic      |
+| `src/app-spec.ts`          | Zod schema for `.athanor/app.yaml` (identity, guidelines, devServer)  |
+| `src/plan-spec.ts`         | Zod schema for plan YAML files                                        |
+| `src/task-spec.ts`         | Zod schema for task YAML files                                        |
+| `src/eval-spec.ts`         | Zod schemas for evaluator config, results, and dev server config      |
+| `src/evaluator.ts`         | Evaluator agent invocation (diff-review and interactive modes)        |
+| `src/evaluator-prompt.ts`  | Prompt construction for evaluator and enrichment critic               |
+| `src/enrichment-critic.ts` | Single-pass critic for task spec quality review                       |
+| `src/dev-server.ts`        | Dev server lifecycle for interactive evaluator mode                   |
+| `src/merge-dev-server.ts`  | Inherits app-level devServer into task evaluator config               |
+| `src/plan-defaults.ts`     | Loaders for app, plan, and task default files                         |
+| `src/load-defaults.ts`     | Generic YAML defaults loader (graceful on missing files)              |
+| `src/prompt.ts`            | Prompt construction for task execution                                |
+| `src/agent.ts`             | Claude Code invocation, with optional MCP and stream-json support     |
+| `src/worktree.ts`          | Git worktree lifecycle (create, changedFiles, diff, commit, push)     |
+| `src/gates.ts`             | Subprocess-based validation gates with truncated output               |
+| `src/path-policy.ts`       | Allowed/forbidden path enforcement                                    |
+| `src/yaml-extract.ts`      | YAML extraction from agent output (handles markdown fences)           |
+| `src/paths.ts`             | Harness root + target repo root resolution                            |
+| `src/clean.ts`             | Worktree and branch cleanup                                           |
+| `src/logger.ts`            | File + stdout logging, colorized                                      |
 
 ## Configuration files
 
@@ -207,7 +235,7 @@ See `.athanor/tasks/example.yaml` (created by `athanor init`). The schema is def
 - `allowedPaths` / `forbiddenPaths` are enforced as deterministic nodes, not just stated in the prompt.
 - `gates` are subprocess commands with exit-code semantics. Pass means pass.
 - `guidelines` are optional task-specific guidelines appended to the app-level guidelines.
-- `maxAgentAttempts` is capped at 3 with a default of 2. LLMs show diminishing returns on retry.
+- `maxAgentAttempts` is capped at 3 with a default of 2 (automatically raised to 3 when an evaluator is enabled). LLMs show diminishing returns on retry.
 - `evaluator` enables an optional adversarial review after gates pass. Supports two modes:
   - `diff-review` (default): an independent agent reviews the git diff against acceptance criteria.
   - `interactive`: starts the project's dev server and uses Playwright MCP to test the running application. Requires `devServer` config (`command`, `readyPattern`, `port`).
@@ -225,9 +253,9 @@ See `.athanor/tasks/example.yaml` (created by `athanor init`). The schema is def
 
 ### Via plan mode (recommended)
 
-1. Run `npm run harness -- plan "your feature description" --stop-after tasks` to generate task specs from a prompt.
+1. Run `athanor plan "your feature description" --stop-after tasks` to generate task specs from a prompt.
 2. Review the generated specs in `.athanor/tasks/{plan-id}/`.
-3. Run `npm run harness -- plan --from-plan .athanor/plans/{plan-id}.yaml` to execute.
+3. Run `athanor run-plan .athanor/plans/{plan-id}.yaml` to execute.
 
 ### Manually
 

@@ -1,15 +1,12 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
 import { execa } from "execa";
 import type { TaskSpec } from "./task-spec.js";
 import type { EvalResult, EvaluatorConfig } from "./eval-spec.js";
 import { Worktree, makeRunId } from "./worktree.js";
-import { runAllGates, summarize, type GateResult } from "./gates.js";
+import { runAllGates, type GateResult } from "./gates.js";
 import { invokeClaudeCode } from "./agent.js";
-import { runEvaluator, formatEvalFeedback } from "./evaluator.js";
-import { buildPrompt } from "./prompt.js";
+import { runEvaluator } from "./evaluator.js";
 import { log } from "./logger.js";
-import { evaluatePathPolicy } from "./path-policy.js";
+import { runTaskLoop } from "./task-loop.js";
 
 export interface WorktreeLike {
   readonly branch: string;
@@ -42,7 +39,7 @@ export interface RunTaskDeps {
   createWorktree(
     targetRepoRoot: string,
     harnessRoot: string,
-    taskId: string,
+    identifier: string,
     runId: string,
     baseBranch?: string,
   ): WorktreeLike;
@@ -64,24 +61,17 @@ export interface RunTaskDeps {
     args: string[],
     opts: { cwd: string; timeoutMs: number },
   ): Promise<CommandResult>;
-  loadCompletedTasks(targetRepoRoot: string): Promise<string | undefined>;
-  appendCompletedTask(
-    targetRepoRoot: string,
-    taskId: string,
-    taskTitle: string,
-    summary: string,
-  ): Promise<void>;
   log: RunTaskLogger;
 }
 
 function createDefaultWorktree(
   targetRepoRoot: string,
   harnessRoot: string,
-  taskId: string,
+  identifier: string,
   runId: string,
   baseBranch?: string,
 ): WorktreeLike {
-  return new Worktree(targetRepoRoot, harnessRoot, taskId, runId, baseBranch);
+  return new Worktree(targetRepoRoot, harnessRoot, identifier, runId, baseBranch);
 }
 
 async function runSubprocess(
@@ -120,63 +110,21 @@ const defaultDeps: RunTaskDeps = {
   runAllGates,
   runEvaluator: defaultRunEvaluator,
   runCommand: runSubprocess,
-  loadCompletedTasks,
-  appendCompletedTask,
   log,
 };
-
-async function loadCompletedTasks(targetRepoRoot: string): Promise<string | undefined> {
-  const summaryPath = resolve(targetRepoRoot, ".athanor", "completed-tasks.md");
-  try {
-    return await readFile(summaryPath, "utf8");
-  } catch {
-    return undefined;
-  }
-}
-
-async function appendCompletedTask(
-  targetRepoRoot: string,
-  taskId: string,
-  taskTitle: string,
-  summary: string,
-): Promise<void> {
-  const athanorDir = resolve(targetRepoRoot, ".athanor");
-  await mkdir(athanorDir, { recursive: true });
-  const summaryPath = join(athanorDir, "completed-tasks.md");
-
-  let existing = "";
-  try {
-    existing = await readFile(summaryPath, "utf8");
-  } catch {
-    // File does not exist yet; start fresh.
-  }
-
-  const section = `## ${taskId}: ${taskTitle}\n\n${summary}\n`;
-  const updated = existing ? `${existing.trimEnd()}\n\n${section}` : section;
-  await writeFile(summaryPath, updated);
-}
 
 export async function runTask(
   task: TaskSpec,
   opts: { targetRepoRoot: string; harnessRoot: string; baseBranch?: string; push?: boolean },
   deps: Partial<RunTaskDeps> = {},
 ): Promise<RunTaskResult> {
-  /*
-   * Blueprint:
-   *   [deterministic] create worktree from main
-   *   [agent]         attempt N: implement the task (cwd = worktree root)
-   *   [deterministic] check changed files against allowedPaths
-   *   [deterministic] run all gates (cwd = worktree root)
-   *   [agent]         attempt N+1 (only if gates failed): fix failures
-   *   [deterministic] commit + push if passing, else surface to human
-   */
   const runtime = { ...defaultDeps, ...deps };
 
-  runtime.log.info(`Starting task: ${task.id} (using ${task.model})`);
+  // Default maxAgentAttempts to 3 when task evaluator is enabled
+  const maxAttempts =
+    task.evaluator?.enabled && task.maxAgentAttempts === 2 ? 3 : task.maxAgentAttempts;
 
-  // ─── DETERMINISTIC NODE: load previously completed tasks ────
-  const completedTasks = await runtime.loadCompletedTasks(opts.targetRepoRoot);
-  const taskWithContext: TaskSpec = completedTasks ? { ...task, completedTasks } : task;
+  runtime.log.info(`Starting task: ${task.id} (using ${task.model})`);
 
   const wt = runtime.createWorktree(
     opts.targetRepoRoot,
@@ -200,111 +148,31 @@ export async function runTask(
   }
   runtime.log.debug("Dependencies installed");
 
-  let priorFailure: string | null = null;
-  let lastSummary: string | undefined;
+  // ─── TASK LOOP: delegate to the shared retry loop ─────────────
+  const loopResult = await runTaskLoop(
+    task,
+    { maxAttempts },
+    {
+      invokeAgent: runtime.invokeAgent,
+      runAllGates: runtime.runAllGates,
+      runEvaluator: runtime.runEvaluator,
+      runCommand: runtime.runCommand,
+      worktree: wt,
+      log: runtime.log,
+    },
+  );
 
-  for (let attempt = 1; attempt <= task.maxAgentAttempts; attempt++) {
-    // ─── AGENT NODE ──────────────────────────────────────────────
-    runtime.log.info(`Agent attempt ${attempt}/${task.maxAgentAttempts}`);
-    const prompt = buildPrompt({ task: taskWithContext, attempt, priorFailure });
-    const agentResult = await runtime.invokeAgent({
-      prompt,
-      cwd: wt.path,
-      model: task.model,
-    });
-    if (!agentResult.success) {
-      runtime.log.error(`Agent invocation failed: ${agentResult.stderr}`);
-      return { success: false, branch: wt.branch };
-    }
-
-    lastSummary = agentResult.summary;
-
-    // ─── DETERMINISTIC NODE: auto-format ─────────────────────────
-    runtime.log.debug("Running Prettier");
-    const fmtResult = await runtime.runCommand("npm", ["run", "format"], {
-      cwd: wt.path,
-      timeoutMs: 60 * 1000,
-    });
-    if (fmtResult.exitCode !== 0) {
-      runtime.log.warn(`Prettier failed: ${fmtResult.stderr}`);
-      // Don't fail the run on prettier itself failing; let gates catch real issues.
-    }
-
-    const changed = await wt.changedFiles();
-    const pathPolicy = evaluatePathPolicy(changed, task.allowedPaths, task.forbiddenPaths);
-    if (!pathPolicy.ok) {
-      priorFailure = pathPolicy.message;
-      runtime.log.warn(priorFailure ?? "Path policy failed");
-      continue;
-    }
-
-    // ─── DETERMINISTIC NODE: run gates ───────────────────────────
-    runtime.log.info("Running validation gates");
-    const results = await runtime.runAllGates(task.gates, wt.path);
-    results.forEach((r) => runtime.log.debug(summarize(r)));
-
-    const failed = results.filter((r) => !r.passed);
-    if (failed.length > 0) {
-      // Focused failure message for the next attempt
-      priorFailure = failed
-        .map((r) => `=== ${r.name} (exit ${r.exitCode}) ===\n${r.output}`)
-        .join("\n\n");
-      continue;
-    }
-
-    runtime.log.info("All gates passed");
-
-    // ─── DETERMINISTIC NODE: commit all changes ─────────────────
-    // Commit before the evaluator so the diff is accurate and no
-    // changes are lost when chaining tasks in plan mode.
-    await wt.commitAll(`${task.title}\n\nTask: ${task.id}`);
-
-    // ─── AGENT NODE: evaluator (optional) ────────────────────────
-    if (task.evaluator?.enabled) {
-      if (task.evaluator.mode === "interactive" && !task.evaluator.devServer) {
-        runtime.log.error(
-          "Evaluator mode is 'interactive' but no devServer config found. " +
-            "Set devServer in the task spec or in .athanor/app.yaml.",
-        );
-        return { success: false, branch: wt.branch };
-      }
-      runtime.log.info(`Running evaluator (${task.evaluator.model})`);
-      const diffText = await wt.diff();
-      const evalResult = await runtime.runEvaluator({
-        task: taskWithContext,
-        diff: diffText,
-        evaluator: task.evaluator,
-        cwd: wt.path,
-      });
-
-      if (!evalResult.passed) {
-        runtime.log.warn(
-          `Evaluator rejected (score: ${evalResult.score ?? "N/A"}): ${evalResult.summary}`,
-        );
-        priorFailure = formatEvalFeedback(evalResult);
-        continue;
-      }
-
-      runtime.log.info(`Evaluator approved (score: ${evalResult.score ?? "N/A"})`);
-    }
-
-    // ─── DETERMINISTIC NODE: record completed task summary ──────
-    const summary = lastSummary ?? `Completed task: ${task.title}`;
-    await runtime.appendCompletedTask(opts.targetRepoRoot, task.id, task.title, summary);
-    if (opts.push !== false) {
-      try {
-        await wt.push();
-        runtime.log.info(`Pushed branch ${wt.branch}`);
-      } catch (e) {
-        runtime.log.warn(`Push failed (maybe no remote configured): ${String(e)}`);
-      }
-    }
-    return { success: true, branch: wt.branch };
+  if (!loopResult.success) {
+    return { success: false, branch: wt.branch };
   }
 
-  runtime.log.warn(
-    `Task ${task.id} did not pass after ${task.maxAgentAttempts} attempts. ` +
-      `Branch ${wt.branch} left for human review at ${wt.path}.`,
-  );
-  return { success: false, branch: wt.branch };
+  if (opts.push !== false) {
+    try {
+      await wt.push();
+      runtime.log.info(`Pushed branch ${wt.branch}`);
+    } catch (e) {
+      runtime.log.warn(`Push failed (maybe no remote configured): ${String(e)}`);
+    }
+  }
+  return { success: true, branch: wt.branch };
 }

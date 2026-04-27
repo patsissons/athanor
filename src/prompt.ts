@@ -4,8 +4,9 @@ export function buildPrompt(opts: {
   task: TaskSpec;
   attempt: number;
   priorFailure: string | null;
+  completedTasks?: string;
 }): string {
-  const { task, attempt, priorFailure } = opts;
+  const { task, attempt, priorFailure, completedTasks } = opts;
   const lines: string[] = [];
 
   lines.push(`# Task: ${task.title}`, "");
@@ -36,9 +37,9 @@ export function buildPrompt(opts: {
   task.gates.forEach((g) => lines.push(`- \`${g.command}\` (gate: ${g.name})`));
   lines.push("");
 
-  if (task.completedTasks) {
+  if (completedTasks) {
     lines.push("## Previously completed tasks");
-    lines.push(task.completedTasks);
+    lines.push(completedTasks);
     lines.push("");
   }
 
@@ -65,9 +66,6 @@ export function buildPrompt(opts: {
   lines.push("- Follow conventions in CLAUDE.md.");
   lines.push("- Make the minimum change needed. Do not refactor unrelated code.");
   lines.push("- When finished, your code must pass all gates above.");
-  lines.push(
-    "- Run the gate commands yourself before finishing and fix any errors. The harness will also run them to formally verify.",
-  );
   lines.push(
     "- When you are done, conclude your response with a concise summary of what you implemented inside <task-summary>...</task-summary> XML tags.",
   );
