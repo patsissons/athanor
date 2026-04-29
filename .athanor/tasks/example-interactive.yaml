@@ -1,0 +1,39 @@
+# yaml-language-server: $schema=https://www.schemastore.org/any.json
+#
+# Companion to example.yaml. Same shape, but exercises the interactive
+# evaluator: after gates pass, the harness boots the dev server and runs
+# Playwright MCP against it to verify acceptance criteria in a real browser.
+# Use this mode when "the feature works" can only be checked by clicking.
+id: add-favorite-toggle
+title: Add a favorite toggle to the demo page
+description: |
+  Add a star-shaped toggle button to /demo that marks the page as a favorite.
+  The state persists across reloads via localStorage under the key "demo:favorite".
+  When favorited, the star is filled; when not, it is outlined.
+
+allowedPaths:
+  - "src/app/demo/**"
+  - "src/lib/components/**"
+  - "src/lib/storage/**"
+
+acceptanceCriteria:
+  - "A star toggle button is visible on the /demo page"
+  - "Clicking the star toggles between filled and outlined states"
+  - "Reloading the page preserves the favorited state"
+  - "The localStorage key is 'demo:favorite' and stores 'true' or 'false'"
+
+evaluator:
+  enabled: true
+  mode: interactive
+  model: opus
+  criteria:
+    - "Clicking the star produces a visible state change without page reload"
+    - "No console errors during interaction"
+    - "Toggle is reachable by keyboard (Tab + Enter/Space)"
+  # devServer is inherited from .athanor/app.yaml when set there.
+  # Override per-task by uncommenting the block below:
+  # devServer:
+  #   command: "npm run dev"
+  #   readyPattern: "ready on"
+  #   port: 3000
+  #   timeoutMs: 30000

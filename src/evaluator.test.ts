@@ -124,6 +124,35 @@ describe("runEvaluator", () => {
 
     expect(deps.invokeAgent).toHaveBeenCalledWith(expect.objectContaining({ model: "sonnet" }));
   });
+
+  it("passes very large diffs through to the prompt verbatim without throwing", async () => {
+    // The evaluator currently does no truncation: the entire diff is embedded
+    // in the prompt as-is. This test pins that behavior so an accidental
+    // truncation regression (or an intentional change) shows up here.
+    // If we ever decide to add a size cap, update this test alongside the
+    // change rather than treating it as a silent assumption.
+    const hugeDiff = `+${"a".repeat(500_000)}`; // ~500KB synthetic diff
+
+    const deps = makeDeps({
+      success: true,
+      stdout: stringify({ passed: true, issues: [], summary: "ok" }),
+      stderr: "",
+    });
+
+    await expect(
+      runEvaluator({
+        task: makeTask(),
+        diff: hugeDiff,
+        evaluator: evalConfig,
+        cwd: "/tmp",
+        deps,
+      }),
+    ).resolves.toMatchObject({ passed: true });
+
+    const prompt = vi.mocked(deps.invokeAgent).mock.calls[0][0].prompt;
+    expect(prompt.length).toBeGreaterThan(500_000);
+    expect(prompt).toContain(hugeDiff);
+  });
 });
 
 describe("runEvaluator interactive mode", () => {

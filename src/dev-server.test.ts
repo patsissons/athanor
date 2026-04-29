@@ -120,6 +120,44 @@ describe("startDevServer", () => {
     expect(mock.child.kill).toHaveBeenCalledWith("SIGTERM");
   });
 
+  it("force-kills with SIGKILL when graceful shutdown does not complete in time", async () => {
+    vi.useFakeTimers();
+    try {
+      const mock = makeMockChild();
+      // Override the default kill behavior so SIGTERM does NOT auto-resolve
+      // the process promise — we want to simulate a hung child that ignores
+      // graceful shutdown.
+      mock.child.kill = vi.fn((signal?: string) => {
+        if (signal === "SIGKILL") {
+          mock.child.killed = true;
+          mock.resolve({ exitCode: null });
+        }
+      });
+
+      const deps: StartDevServerDeps = {
+        spawn: vi.fn(() => mock.child as never),
+      };
+
+      const startPromise = startDevServer(config, "/tmp/wt", deps);
+      mock.emitStdout("ready on http://localhost:3000\n");
+      const handle = await startPromise;
+
+      const stopPromise = handle.stop();
+
+      // First kill is SIGTERM, queued before the timer fires.
+      expect(mock.child.kill).toHaveBeenNthCalledWith(1, "SIGTERM");
+
+      // Advance past the 5s grace period; the force-kill timer should fire.
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(mock.child.kill).toHaveBeenNthCalledWith(2, "SIGKILL");
+
+      await stopPromise;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("passes command and cwd to spawn", async () => {
     const mock = makeMockChild();
     const deps: StartDevServerDeps = {

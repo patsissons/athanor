@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" role="img" aria-label="Athanor">
+  <title>Athanor</title>
+  <polygon points="100,16 172,58 172,142 100,184 28,142 28,58"
+           fill="#1f2937" stroke="#1f2937" stroke-width="6" stroke-linejoin="round"/>
+  <g transform="translate(40, 40) scale(0.6)">
+    <path d="M 88 28 L 112 28 L 112 64 L 176 172 L 140 172 L 128 148 L 72 148 L 60 172 L 24 172 L 88 64 Z"
+          fill="#f5e8d3"/>
+    <path d="M 88 124 L 112 124 L 100 100 Z" fill="#ff6b35"/>
+  </g>
+</svg>

@@ -286,4 +286,95 @@ describe("runPlanExecution", () => {
     const loopCalls = vi.mocked(deps.runTaskLoop).mock.calls;
     expect(loopCalls[0][1].maxAttempts).toBe(3);
   });
+
+  // ── Edge cases ─────────────────────────────────────────────────────
+
+  it("handles a single-task plan", async () => {
+    const onePlan: PlanSpec = {
+      id: "single",
+      name: "Single",
+      tasks: [{ id: "only-one", description: "Just one." }],
+    };
+    const deps = makeDeps({
+      loadPlanSpec: vi.fn(async () => onePlan),
+      readdir: vi.fn(async () => ["only-one.yaml"]),
+    });
+
+    const ok = await runPlanExecution("plans/single.yaml", planOpts, deps);
+
+    expect(ok).toBe(true);
+    expect(deps.runTaskLoop).toHaveBeenCalledTimes(1);
+    expect(deps.appendCompletedTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails when a task file is missing on disk after pre-check passes", async () => {
+    // The plan lists three tasks but only two YAML files exist on disk.
+    const { logger, messages } = makeLogger();
+    const deps = makeDeps({
+      log: logger,
+      readdir: vi.fn(async () => ["task-1.yaml", "task-2.yaml"]),
+    });
+
+    const ok = await runPlanExecution("plans/test.yaml", planOpts, deps);
+
+    expect(ok).toBe(false);
+    expect(messages.error.some((m) => m.includes("Task file not found for task-3"))).toBe(true);
+  });
+
+  it("propagates worktree creation failure", async () => {
+    const failingWorktree: WorktreeLike = {
+      branch: "athanor/x/y",
+      path: "/tmp/wt",
+      create: vi.fn().mockRejectedValue(new Error("git worktree add failed: branch exists")),
+      changedFiles: vi.fn().mockResolvedValue([]),
+      diff: vi.fn().mockResolvedValue(""),
+      commitAll: vi.fn().mockResolvedValue(undefined),
+      push: vi.fn().mockResolvedValue(undefined),
+    };
+    const deps = makeDeps({
+      createWorktree: vi.fn(() => failingWorktree),
+    });
+
+    // run-plan does not catch wt.create errors; the rejection should surface.
+    await expect(runPlanExecution("plans/test.yaml", planOpts, deps)).rejects.toThrow(
+      /git worktree add failed/,
+    );
+    // No tasks should have been appended to completed-tasks because we failed
+    // before the loop started.
+    expect(deps.runTaskLoop).not.toHaveBeenCalled();
+    expect(deps.appendCompletedTask).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a clear error when a task is in git history but missing from completed-tasks.yaml", async () => {
+    // Realistic resume corruption: a previous run committed task-2 but its
+    // process died before writing the YAML entry. Pre-check must reject this.
+    const { logger, messages } = makeLogger();
+    const deps = makeDeps({
+      log: logger,
+      loadCompletedTasks: vi.fn(async () => ({ tasks: [{ id: "task-1", title: "First" }] })),
+      scanGitForTaskIds: vi.fn(
+        async () =>
+          new Map([
+            ["task-1", "abc"],
+            ["task-2", "def"],
+          ]),
+      ),
+      crossReferenceCompletedTasks: vi.fn(() => ({
+        valid: false,
+        resumeIndex: 0,
+        errors: [
+          'Task "task-2" found in git history but not in completed-tasks.yaml. ' +
+            "Add it to completed-tasks.yaml with at least the task id.",
+        ],
+      })),
+    });
+
+    const ok = await runPlanExecution("plans/test.yaml", planOpts, deps);
+
+    expect(ok).toBe(false);
+    expect(deps.createWorktree).not.toHaveBeenCalled();
+    expect(messages.error.some((m) => m.includes("git history but not in completed-tasks"))).toBe(
+      true,
+    );
+  });
 });

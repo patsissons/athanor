@@ -311,7 +311,7 @@ describe("runTaskLoop", () => {
   });
 
   it("falls back to diff-review when interactive dev server fails to start", async () => {
-    const { deps } = makeDeps({
+    const { deps, messages } = makeDeps({
       evalResults: [
         { passed: false, issues: [], summary: "Failed to start dev server: ENOENT" },
         { passed: true, score: 85, issues: [], summary: "Approved via diff-review." },
@@ -324,9 +324,15 @@ describe("runTaskLoop", () => {
     const result = await runTaskLoop(task, { maxAttempts: 2 }, deps);
 
     expect(result.success).toBe(true);
+    // Both calls are made within the same retry attempt — the fallback should
+    // not consume an agent retry.
     expect(deps.runEvaluator).toHaveBeenCalledTimes(2);
+    expect(deps.invokeAgent).toHaveBeenCalledTimes(1);
     const secondCallArgs = vi.mocked(deps.runEvaluator).mock.calls[1]?.[0];
     expect(secondCallArgs?.evaluator.mode).toBe("diff-review");
+    // The mode switch is logged so it is not silent — important because the
+    // interactive coverage signal degrades to a textual one.
+    expect(messages.warn.some((m) => m.includes("falling back to diff-review"))).toBe(true);
   });
 
   it("fails after exhausting attempts with evaluator rejections", async () => {

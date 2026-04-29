@@ -256,6 +256,6 @@ export async function runInit(): Promise<void> {
 
   p.outro(
     "Scaffolding complete! Edit .athanor/tasks/example.yaml to define your first task, then run:\n" +
-      "  athanor run tasks/example.yaml",
+      "  athanor run .athanor/tasks/example.yaml",
   );
 }

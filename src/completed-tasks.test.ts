@@ -175,3 +175,35 @@ describe("formatCompletedTasksContext", () => {
     expect(result).toContain("## task-1: task-1");
   });
 });
+
+describe("CompletedTasksFileSchema (edge cases)", () => {
+  it("rejects an entry with an empty id", () => {
+    expect(() => CompletedTasksFileSchema.parse({ tasks: [{ id: "" }] })).toThrow();
+  });
+
+  it("accepts arbitrary timestamp strings without parsing them", () => {
+    // Timestamps are stored verbatim — validation does not enforce ISO 8601.
+    // Future-dated values, malformed strings, and timezones all round-trip
+    // unchanged. This is intentional: completed-tasks.yaml is local-only state
+    // for the harness, not a structured timeline.
+    const data = CompletedTasksFileSchema.parse({
+      tasks: [
+        { id: "future", timestamp: "2099-12-31T00:00:00.000Z" },
+        { id: "messy", timestamp: "yesterday" },
+        { id: "no-tz", timestamp: "2026-04-28 14:00" },
+      ],
+    });
+
+    expect(data.tasks.map((t) => t.timestamp)).toEqual([
+      "2099-12-31T00:00:00.000Z",
+      "yesterday",
+      "2026-04-28 14:00",
+    ]);
+  });
+
+  it("rejects a timestamp of the wrong type", () => {
+    expect(() =>
+      CompletedTasksFileSchema.parse({ tasks: [{ id: "x", timestamp: 12345 }] }),
+    ).toThrow();
+  });
+});

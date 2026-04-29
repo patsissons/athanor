@@ -1,6 +1,22 @@
-# Athanor
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/logo-dark-256.png">
+    <img alt="Athanor logo" src="docs/brand/logo-256.png" width="160">
+  </picture>
+</p>
 
-A harness for driving Claude Code to implement features against well-defined tasks.
+<h1 align="center">Athanor</h1>
+
+<p align="center">
+  <em>A harness for driving Claude Code to implement features against well-defined tasks.</em>
+</p>
+
+<p align="center">
+  <a href="#quickstart">Quickstart</a> ·
+  <a href="#advanced-walkthrough">Advanced walkthrough</a> ·
+  <a href="#design-principles">Design principles</a> ·
+  <a href="#modules">Modules</a>
+</p>
 
 ## Quickstart
 
@@ -47,7 +63,7 @@ A harness for driving Claude Code to implement features against well-defined tas
 3. **Run the task:**
 
    ```bash
-   athanor run tasks/my-first-task.yaml
+   athanor run .athanor/tasks/my-first-task.yaml
    ```
 
    The harness creates an isolated git worktree, runs Claude Code inside it, validates the result against your gates, and commits on success.
@@ -240,6 +256,8 @@ See `.athanor/tasks/example.yaml` (created by `athanor init`). The schema is def
   - `diff-review` (default): an independent agent reviews the git diff against acceptance criteria.
   - `interactive`: starts the project's dev server and uses Playwright MCP to test the running application. Requires `devServer` config (`command`, `readyPattern`, `port`).
 
+> **Evaluator vs. enrichment critic.** These are two independent adversarial agents that operate at different phases. The **enrichment critic** (`--enrichment-critic` on `plan`) reviews the _task spec_ before any code is written — it checks for vague acceptance criteria, loose `allowedPaths`, and scope overlap. The **evaluator** (`evaluator.enabled` on a task) reviews the _generated code_ after gates pass. They compose: critic improves the spec the evaluator will later judge against. Use the critic when prompts are fuzzy, the evaluator when tasks are user-visible.
+
 ## Design principles
 
 - Deterministic nodes that silently pass are worse than no check at all. Every check gets a negative test.
@@ -263,3 +281,62 @@ See `.athanor/tasks/example.yaml` (created by `athanor init`). The schema is def
 2. Keep `allowedPaths` as tight as you can. The narrower the scope, the fewer surprises.
 3. Make acceptance criteria concrete and testable. "Looks good" is not a criterion. "Route exists, table renders 3 rows with columns X, Y, Z" is.
 4. Run with `--debug` the first time so you can watch the agent's reasoning.
+
+## Advanced walkthrough
+
+A complete pass through the harness, exercising plan generation, the enrichment critic, sequential execution, mid-run failure, and resume. The example feature is "add a favorites list" against a small Next.js app.
+
+**1. Plan with adversarial enrichment.** Generate a plan and stop after enrichment so you can review specs before any code runs. `--enrichment-critic` enables a single-pass adversarial review of each enriched task spec.
+
+```bash
+athanor plan "Add a favorites list with a star toggle and persistent storage" \
+  --enrichment-critic --stop-after tasks
+```
+
+The harness writes `.athanor/plans/add-favorites.yaml` (the plan) and one task spec per item under `.athanor/tasks/add-favorites/`. When the critic rejects a task spec — e.g. for a vague criterion like _"works correctly"_ or `allowedPaths: ["src/**"]` that overlaps with sibling tasks — the enrichment agent re-runs with the critic's feedback as context. You'll see lines like:
+
+```
+[critic]   reject: criterion 1 is not testable ("works correctly")
+[enrich]   re-running with critic feedback (attempt 2/2)
+[critic]   approved
+```
+
+**2. Execute the plan.** Run all tasks sequentially in a single worktree branch. The harness creates `athanor/add-favorites/<runId>` and walks the plan top-to-bottom.
+
+```bash
+athanor run-plan .athanor/plans/add-favorites.yaml
+```
+
+Each task runs through the full retry loop: agent → format → path policy → gates → evaluator → commit. On success, the task is appended to `.athanor/completed-tasks.yaml` (local-only, never committed). After two clean tasks the file looks like:
+
+```yaml
+tasks:
+  - id: add-favorites-store
+    title: Add favorites localStorage helper
+    commitHash: 8f3a4c1...
+    timestamp: 2026-04-28T14:12:31.004Z
+    summary: Added src/lib/storage/favorites.ts with get/set helpers and tests.
+  - id: add-star-toggle
+    title: Add star toggle component
+    commitHash: a12b9e5...
+    timestamp: 2026-04-28T14:18:02.117Z
+    summary: Added FavoriteToggle that wires localStorage to a star button.
+```
+
+**3. Resume after a failure.** Imagine the third task (`add-favorites-page`) exhausts its retry budget — the evaluator keeps rejecting because the empty-state isn't covered. The harness halts and leaves the worktree intact for inspection.
+
+After fixing the spec (tightening criteria, adding an acceptance criterion for the empty state), rerun the same command:
+
+```bash
+athanor run-plan .athanor/plans/add-favorites.yaml
+```
+
+On startup the harness cross-references `completed-tasks.yaml` against git history (`git log --grep="Task: "`). Both sources must agree — any mismatch is a hard error. With both in sync, execution resumes at task 3 with the prior two tasks injected as completed-context for the agent.
+
+**4. Push the branch.** When the run finishes cleanly, push with:
+
+```bash
+athanor run-plan .athanor/plans/add-favorites.yaml --push
+```
+
+Choosing the right evaluator mode: `diff-review` is the right default for backend, schema, or library tasks where reading the diff is sufficient. `interactive` is worth the dev-server spin-up cost when acceptance criteria are visual or behavioral (rendering, click handlers, persistence across reloads) — see `.athanor/tasks/example-interactive.yaml` for a complete config.

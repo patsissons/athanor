@@ -102,7 +102,7 @@ export async function invokeClaudeCode(opts: {
   };
 }
 
-function extractSummary(resultText: string | undefined): string | undefined {
+export function extractSummary(resultText: string | undefined): string | undefined {
   if (!resultText) return undefined;
   const match = resultText.match(/<task-summary>([\s\S]*?)<\/task-summary>/);
   return match?.[1]?.trim();
@@ -137,7 +137,7 @@ interface CollectedResult {
  * Render a single stream-json event as a human-readable line.
  * Returns the collected result data when a result event is encountered.
  */
-function prettyPrintEvent(line: string): CollectedResult | undefined {
+export function prettyPrintEvent(line: string): CollectedResult | undefined {
   if (!line.trim()) return undefined;
 
   let evt: ClaudeEvent;
@@ -198,7 +198,7 @@ function prettyPrintEvent(line: string): CollectedResult | undefined {
   return undefined;
 }
 
-function summarizeToolInput(name: string, input: unknown): string {
+export function summarizeToolInput(name: string, input: unknown): string {
   if (!input || typeof input !== "object") return "";
   const i = input as Record<string, unknown>;
   if (typeof i.file_path === "string") return i.file_path;
