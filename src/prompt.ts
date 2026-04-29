@@ -4,8 +4,9 @@ export function buildPrompt(opts: {
   task: TaskSpec;
   attempt: number;
   priorFailure: string | null;
+  completedTasks?: string;
 }): string {
-  const { task, attempt, priorFailure } = opts;
+  const { task, attempt, priorFailure, completedTasks } = opts;
   const lines: string[] = [];
 
   lines.push(`# Task: ${task.title}`, "");
@@ -36,19 +37,28 @@ export function buildPrompt(opts: {
   task.gates.forEach((g) => lines.push(`- \`${g.command}\` (gate: ${g.name})`));
   lines.push("");
 
-  if (task.completedTasks) {
+  if (completedTasks) {
     lines.push("## Previously completed tasks");
-    lines.push(task.completedTasks);
+    lines.push(completedTasks);
     lines.push("");
   }
 
   if (priorFailure) {
+    const isEvalFeedback = priorFailure.startsWith("=== Evaluator Review ===");
     lines.push(`## Previous attempt failed (attempt ${attempt - 1})`);
-    lines.push("Gate output:");
-    lines.push("```");
-    lines.push(priorFailure);
-    lines.push("```");
-    lines.push("Fix the specific issue shown above. Do not rewrite unrelated code.");
+    if (isEvalFeedback) {
+      lines.push("An independent evaluator reviewed your implementation and found issues:");
+      lines.push("```");
+      lines.push(priorFailure);
+      lines.push("```");
+      lines.push("Address every issue listed above. The evaluator will review your next attempt.");
+    } else {
+      lines.push("Gate output:");
+      lines.push("```");
+      lines.push(priorFailure);
+      lines.push("```");
+      lines.push("Fix the specific issue shown above. Do not rewrite unrelated code.");
+    }
     lines.push("");
   }
 
@@ -56,7 +66,6 @@ export function buildPrompt(opts: {
   lines.push("- Follow conventions in CLAUDE.md.");
   lines.push("- Make the minimum change needed. Do not refactor unrelated code.");
   lines.push("- When finished, your code must pass all gates above.");
-  lines.push("- Do not run the gates yourself; the harness will run them.");
   lines.push(
     "- When you are done, conclude your response with a concise summary of what you implemented inside <task-summary>...</task-summary> XML tags.",
   );

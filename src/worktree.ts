@@ -5,19 +5,29 @@ import { dirname, resolve } from "node:path";
 export class Worktree {
   readonly targetRepoRoot: string;
   readonly harnessRoot: string;
-  readonly taskId: string;
+  readonly identifier: string;
   readonly runId: string;
   readonly branch: string;
   readonly path: string; // absolute path to the worktree root
 
-  constructor(targetRepoRoot: string, harnessRoot: string, taskId: string, runId: string) {
+  private readonly baseBranch?: string;
+  private startCommit?: string;
+
+  constructor(
+    targetRepoRoot: string,
+    harnessRoot: string,
+    identifier: string,
+    runId: string,
+    baseBranch?: string,
+  ) {
     this.targetRepoRoot = resolve(targetRepoRoot);
     this.harnessRoot = resolve(harnessRoot);
-    this.taskId = taskId;
+    this.identifier = identifier;
     this.runId = runId;
-    this.branch = `athanor/${taskId}/${runId}`;
+    this.baseBranch = baseBranch;
+    this.branch = `athanor/${identifier}/${runId}`;
     // Worktrees live at the harness root under .worktrees/.
-    this.path = resolve(this.harnessRoot, `.worktrees/${taskId}-${runId}`);
+    this.path = resolve(this.harnessRoot, `.worktrees/${identifier}-${runId}`);
   }
 
   private async git(args: string[], cwd?: string): Promise<string> {
@@ -26,7 +36,8 @@ export class Worktree {
       reject: false,
     });
     if (result.exitCode !== 0) {
-      throw new Error(`git ${args.join(" ")} failed (exit ${result.exitCode})\n${result.stderr}`);
+      const output = [result.stderr, result.stdout].filter(Boolean).join("\n");
+      throw new Error(`git ${args.join(" ")} failed (exit ${result.exitCode})\n${output}`);
     }
     return result.stdout;
   }
@@ -34,22 +45,28 @@ export class Worktree {
   async create(): Promise<string> {
     await mkdir(dirname(this.path), { recursive: true });
 
-    const defaultBranch = await this.detectDefaultBranch();
+    const startPoint = this.baseBranch ?? (await this.detectDefaultBranch());
 
-    // Fetch the latest default branch from origin (best-effort).
+    // Fetch the latest branch from origin (best-effort).
+    // When baseBranch is an athanor task branch it won't exist on origin, so
+    // fetch is expected to fail — that's fine.
     try {
-      await this.git(["fetch", "origin", defaultBranch]);
+      await this.git(["fetch", "origin", startPoint]);
     } catch {
       // No remote or fetch failed — local-only is fine.
     }
 
-    // Prefer the local default branch so unpushed commits are included.
+    // Prefer the local branch so unpushed commits are included.
     // Fall back to origin's copy when the local branch doesn't exist.
     try {
-      await this.git(["worktree", "add", "-b", this.branch, this.path, defaultBranch]);
+      await this.git(["worktree", "add", "-b", this.branch, this.path, startPoint]);
     } catch {
-      await this.git(["worktree", "add", "-b", this.branch, this.path, `origin/${defaultBranch}`]);
+      await this.git(["worktree", "add", "-b", this.branch, this.path, `origin/${startPoint}`]);
     }
+
+    // Record the starting commit so diff() can compare against it even if
+    // the agent commits during execution.
+    this.startCommit = (await this.git(["rev-parse", "HEAD"], this.path)).trim();
 
     return this.path;
   }
@@ -86,7 +103,16 @@ export class Worktree {
 
   async commitAll(message: string): Promise<void> {
     await this.git(["add", "-A"], this.path);
-    await this.git(["commit", "-m", message], this.path);
+    try {
+      await this.git(["commit", "-m", message], this.path);
+    } catch (err) {
+      // "nothing to commit" exits 1 — that's fine if the agent already committed.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("nothing to commit")) {
+        return;
+      }
+      throw err;
+    }
   }
 
   async push(): Promise<void> {
@@ -101,11 +127,37 @@ export class Worktree {
   /**
    * All files changed in the worktree, returned as paths relative to the
    * worktree root (so they can be matched against allowedPaths globs from
-   * the task spec).
+   * the task spec).  Includes both uncommitted changes and changes committed
+   * by the agent since the worktree was created.
    */
   async changedFiles(): Promise<string[]> {
-    const out = await this.git(["status", "--porcelain"], this.path);
-    return parseChangedFiles(out);
+    // Uncommitted changes
+    const statusOut = await this.git(["status", "--porcelain", "-uall"], this.path);
+    const uncommitted = parseChangedFiles(statusOut);
+
+    // Files changed in commits since the worktree was created
+    let committed: string[] = [];
+    if (this.startCommit) {
+      const diffOut = await this.git(["diff", "--name-only", this.startCommit, "HEAD"], this.path);
+      committed = diffOut
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+    }
+
+    return [...new Set([...uncommitted, ...committed])];
+  }
+
+  /**
+   * Unified diff of all changes in the worktree relative to the starting
+   * commit.  Captures both agent-committed changes and any remaining
+   * uncommitted changes.
+   */
+  async diff(): Promise<string> {
+    // If the agent committed changes, `git diff HEAD` would be empty.
+    // Diff against the starting commit to capture everything.
+    const base = this.startCommit ?? "HEAD";
+    return this.git(["diff", base], this.path);
   }
 }
 

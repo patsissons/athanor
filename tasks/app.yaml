@@ -1,4 +1,0 @@
-# yaml-language-server: $schema=https://www.schemastore.org/any.json
-id: athanor
-title: Athanor
-description: A harness for driving Claude Code to implement features against well defined tasks.

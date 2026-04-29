@@ -43,14 +43,12 @@ function makeDeps(overrides: Partial<PlanDeps> = {}): PlanDeps {
   const { logger } = makeLogger();
   return {
     invokeAgent: vi.fn(agentReturning(stringify(samplePlan))),
+    critiqueTaskSpec: vi.fn(async () => ({ passed: true, issues: [], summary: "Approved." })),
     loadAppDefaults: vi.fn(async () => ({})),
     loadTaskDefaults: vi.fn(async () => ({})),
     writeFile: vi.fn(async () => {}),
     mkdir: vi.fn(async () => {}),
     readdir: vi.fn(async () => []),
-    loadPlanSpec: vi.fn(async () => samplePlan),
-    loadTaskSpec: vi.fn(async () => sampleTask),
-    runTask: vi.fn(async () => true),
     log: logger,
     harnessRoot: "/harness",
     targetRepoRoot: "/repo",
@@ -62,9 +60,10 @@ describe("runPlan", () => {
   describe("Phase 1: Plan Generation", () => {
     it("generates a plan from a prompt", async () => {
       const deps = makeDeps();
-      const ok = await runPlan({ prompt: "Add favorites", stopAfter: "plan" }, deps);
+      const result = await runPlan({ prompt: "Add favorites", stopAfter: "plan" }, deps);
 
-      expect(ok).toBe(true);
+      expect(result.success).toBe(true);
+      expect(result.planPath).toBeDefined();
       expect(deps.invokeAgent).toHaveBeenCalledTimes(1);
       expect(vi.mocked(deps.invokeAgent).mock.calls[0][0].model).toBe("opus");
       expect(deps.writeFile).toHaveBeenCalled();
@@ -77,21 +76,12 @@ describe("runPlan", () => {
       expect(deps.loadAppDefaults).toHaveBeenCalledWith("/repo");
     });
 
-    it("skips generation when --from-plan is provided", async () => {
-      const deps = makeDeps();
-      const ok = await runPlan({ fromPlan: "plans/existing.yaml", stopAfter: "plan" }, deps);
-
-      expect(ok).toBe(true);
-      expect(deps.invokeAgent).not.toHaveBeenCalled();
-      expect(deps.loadPlanSpec).toHaveBeenCalledWith("plans/existing.yaml");
-    });
-
-    it("fails when no prompt and no --from-plan", async () => {
+    it("fails when no prompt provided", async () => {
       const { logger, messages } = makeLogger();
       const deps = makeDeps({ log: logger });
-      const ok = await runPlan({}, deps);
+      const result = await runPlan({}, deps);
 
-      expect(ok).toBe(false);
+      expect(result.success).toBe(false);
       expect(messages.error.some((m) => m.includes("No prompt"))).toBe(true);
     });
 
@@ -106,9 +96,9 @@ describe("runPlan", () => {
           parsed: null,
         })),
       });
-      const ok = await runPlan({ prompt: "test", stopAfter: "plan" }, deps);
+      const result = await runPlan({ prompt: "test", stopAfter: "plan" }, deps);
 
-      expect(ok).toBe(false);
+      expect(result.success).toBe(false);
       expect(messages.error.some((m) => m.includes("failed"))).toBe(true);
     });
 
@@ -123,9 +113,9 @@ describe("runPlan", () => {
           parsed: null,
         })),
       });
-      const ok = await runPlan({ prompt: "test", stopAfter: "plan" }, deps);
+      const result = await runPlan({ prompt: "test", stopAfter: "plan" }, deps);
 
-      expect(ok).toBe(false);
+      expect(result.success).toBe(false);
       expect(messages.error.some((m) => m.includes("extract YAML"))).toBe(true);
     });
   });
@@ -136,7 +126,6 @@ describe("runPlan", () => {
       const deps = makeDeps({
         invokeAgent: vi.fn(async () => {
           callCount++;
-          // First call is plan generation (opus), rest are task enrichment (sonnet)
           if (callCount === 1) {
             return { success: true, stdout: stringify(samplePlan), stderr: "", parsed: null };
           }
@@ -144,9 +133,10 @@ describe("runPlan", () => {
         }),
       });
 
-      const ok = await runPlan({ prompt: "Add favorites", stopAfter: "tasks" }, deps);
+      const result = await runPlan({ prompt: "Add favorites", stopAfter: "tasks" }, deps);
 
-      expect(ok).toBe(true);
+      expect(result.success).toBe(true);
+      expect(result.planPath).toBeDefined();
       // 1 plan + 2 task enrichments
       expect(deps.invokeAgent).toHaveBeenCalledTimes(3);
       // Plan write + 2 task writes
@@ -169,6 +159,28 @@ describe("runPlan", () => {
       await runPlan({ prompt: "test", stopAfter: "tasks" }, deps);
     });
 
+    it("skips tasks that already have YAML files", async () => {
+      let callCount = 0;
+      const deps = makeDeps({
+        invokeAgent: vi.fn(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return { success: true, stdout: stringify(samplePlan), stderr: "", parsed: null };
+          }
+          return { success: true, stdout: stringify(sampleTask), stderr: "", parsed: null };
+        }),
+        readdir: vi.fn(async () => ["add-favorites-page.yaml"]),
+      });
+
+      const result = await runPlan({ prompt: "Add favorites", stopAfter: "tasks" }, deps);
+
+      expect(result.success).toBe(true);
+      // 1 plan + 1 task enrichment (second task only, first skipped)
+      expect(deps.invokeAgent).toHaveBeenCalledTimes(2);
+      // Plan write + 1 task write
+      expect(deps.writeFile).toHaveBeenCalledTimes(2);
+    });
+
     it("fails if any task enrichment fails", async () => {
       let callCount = 0;
       const { logger, messages } = makeLogger();
@@ -183,35 +195,10 @@ describe("runPlan", () => {
         }),
       });
 
-      const ok = await runPlan({ prompt: "test", stopAfter: "tasks" }, deps);
+      const result = await runPlan({ prompt: "test", stopAfter: "tasks" }, deps);
 
-      expect(ok).toBe(false);
+      expect(result.success).toBe(false);
       expect(messages.error.some((m) => m.includes("enrichment agent failed"))).toBe(true);
-    });
-  });
-
-  describe("Phase 3: Task Execution", () => {
-    it("runs tasks from --from-plan and executes them", async () => {
-      const deps = makeDeps({
-        invokeAgent: vi.fn(agentReturning(stringify(sampleTask))),
-        readdir: vi.fn(async () => ["task-1.yaml", "task-2.yaml"]),
-      });
-
-      const ok = await runPlan({ fromPlan: "plans/test.yaml" }, deps);
-
-      expect(ok).toBe(true);
-      expect(deps.runTask).toHaveBeenCalledTimes(2);
-    });
-
-    it("returns false if any task fails", async () => {
-      const deps = makeDeps({
-        readdir: vi.fn(async () => ["task-1.yaml"]),
-        runTask: vi.fn(async () => false),
-      });
-
-      const ok = await runPlan({ fromPlan: "plans/test.yaml" }, deps);
-
-      expect(ok).toBe(false);
     });
   });
 
@@ -222,10 +209,19 @@ describe("runPlan", () => {
 
       // Only plan generation call, no task enrichment
       expect(deps.invokeAgent).toHaveBeenCalledTimes(1);
-      expect(deps.runTask).not.toHaveBeenCalled();
     });
 
-    it("stops after tasks and does not execute", async () => {
+    it("returns planPath on success", async () => {
+      const deps = makeDeps();
+      const result = await runPlan({ prompt: "test", stopAfter: "plan" }, deps);
+
+      expect(result.success).toBe(true);
+      expect(result.planPath).toContain("add-favorites.yaml");
+    });
+  });
+
+  describe("Enrichment Critic", () => {
+    it("skips critic when not enabled", async () => {
       let callCount = 0;
       const deps = makeDeps({
         invokeAgent: vi.fn(async () => {
@@ -239,7 +235,99 @@ describe("runPlan", () => {
 
       await runPlan({ prompt: "test", stopAfter: "tasks" }, deps);
 
-      expect(deps.runTask).not.toHaveBeenCalled();
+      expect(deps.critiqueTaskSpec).not.toHaveBeenCalled();
+    });
+
+    it("runs critic when enabled and approves good specs", async () => {
+      let callCount = 0;
+      const deps = makeDeps({
+        invokeAgent: vi.fn(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return { success: true, stdout: stringify(samplePlan), stderr: "", parsed: null };
+          }
+          return { success: true, stdout: stringify(sampleTask), stderr: "", parsed: null };
+        }),
+      });
+
+      await runPlan(
+        { prompt: "test", stopAfter: "tasks", enrichmentCritic: { enabled: true } },
+        deps,
+      );
+
+      // 2 tasks in the plan = 2 critic calls
+      expect(deps.critiqueTaskSpec).toHaveBeenCalledTimes(2);
+    });
+
+    it("re-enriches task when critic rejects", async () => {
+      let callCount = 0;
+      const deps = makeDeps({
+        invokeAgent: vi.fn(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return { success: true, stdout: stringify(samplePlan), stderr: "", parsed: null };
+          }
+          return { success: true, stdout: stringify(sampleTask), stderr: "", parsed: null };
+        }),
+        critiqueTaskSpec: vi
+          .fn()
+          .mockResolvedValueOnce({
+            passed: false,
+            issues: [
+              {
+                severity: "critical",
+                criterion: "Acceptance criteria quality",
+                description: "Too vague",
+              },
+            ],
+            summary: "Needs improvement.",
+          })
+          .mockResolvedValue({ passed: true, issues: [], summary: "Approved." }),
+      });
+
+      const result = await runPlan(
+        { prompt: "test", stopAfter: "tasks", enrichmentCritic: { enabled: true } },
+        deps,
+      );
+
+      expect(result.success).toBe(true);
+      // 1 plan + 2 enrichments + 1 re-enrichment (for the rejected task)
+      expect(deps.invokeAgent).toHaveBeenCalledTimes(4);
+    });
+
+    it("uses original spec when re-enrichment fails", async () => {
+      let callCount = 0;
+      const deps = makeDeps({
+        invokeAgent: vi.fn(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return { success: true, stdout: stringify(samplePlan), stderr: "", parsed: null };
+          }
+          if (callCount === 2) {
+            return { success: true, stdout: stringify(sampleTask), stderr: "", parsed: null };
+          }
+          if (callCount === 3) {
+            return { success: false, stdout: "", stderr: "agent died", parsed: null };
+          }
+          return { success: true, stdout: stringify(sampleTask), stderr: "", parsed: null };
+        }),
+        critiqueTaskSpec: vi
+          .fn()
+          .mockResolvedValueOnce({
+            passed: false,
+            issues: [],
+            summary: "Needs work.",
+          })
+          .mockResolvedValue({ passed: true, issues: [], summary: "OK." }),
+      });
+
+      const result = await runPlan(
+        { prompt: "test", stopAfter: "tasks", enrichmentCritic: { enabled: true } },
+        deps,
+      );
+
+      expect(result.success).toBe(true);
+      expect(deps.writeFile).toHaveBeenCalled();
     });
   });
 });

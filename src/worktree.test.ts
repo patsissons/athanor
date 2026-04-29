@@ -16,6 +16,10 @@ describe("parseChangedPathsFromPorcelainLine", () => {
   it("parses untracked entries", () => {
     expect(parseChangedPathsFromPorcelainLine("?? src/new.ts")).toEqual(["src/new.ts"]);
   });
+
+  it("parses untracked directory entries (trailing slash)", () => {
+    expect(parseChangedPathsFromPorcelainLine("?? src/components/")).toEqual(["src/components/"]);
+  });
 });
 
 describe("parseChangedFiles", () => {

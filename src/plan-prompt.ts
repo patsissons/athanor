@@ -21,7 +21,11 @@ tasks:
         - name: typecheck
           command: "npm run typecheck"
       maxAgentAttempts: 2
-      model: sonnet`;
+      model: sonnet
+      evaluator:
+        enabled: true
+        mode: diff-review  # or "interactive"
+        model: opus`;
 
 const TASK_SPEC_SHAPE = `\
 id: kebab-case-task-id
@@ -45,9 +49,18 @@ gates:
   - name: test
     command: "npm test -- --passWithNoTests"
 maxAgentAttempts: 2
-model: sonnet`;
+model: sonnet
+# Optional: evaluator for adversarial review after gates pass
+# evaluator:
+#   enabled: true
+#   mode: diff-review       # or "interactive"
+#   model: opus`;
 
-export function buildPlanPrompt(userPrompt: string, app?: Partial<AppSpec>): string {
+export function buildPlanPrompt(
+  userPrompt: string,
+  app?: Partial<AppSpec>,
+  taskDefaults?: Partial<TaskSpec>,
+): string {
   const lines: string[] = [];
 
   lines.push("# Objective");
@@ -60,7 +73,7 @@ export function buildPlanPrompt(userPrompt: string, app?: Partial<AppSpec>): str
   );
   lines.push("");
 
-  if (app && (app.description || app.guidelines?.length)) {
+  if (app && (app.description || app.guidelines?.length || app.devServer)) {
     lines.push("## App Context");
     lines.push("");
     if (app.title) {
@@ -76,6 +89,10 @@ export function buildPlanPrompt(userPrompt: string, app?: Partial<AppSpec>): str
       for (const g of app.guidelines) {
         lines.push(`- ${g}`);
       }
+      lines.push("");
+    }
+    if (app.devServer) {
+      lines.push("This project has a dev server configured for interactive testing.");
       lines.push("");
     }
   }
@@ -109,6 +126,26 @@ export function buildPlanPrompt(userPrompt: string, app?: Partial<AppSpec>): str
       "needs Opus instead of Sonnet, or must be restricted to specific file paths).",
   );
   lines.push("- Order tasks logically — foundational tasks first, dependent tasks after.");
+
+  if (taskDefaults?.forbiddenPaths?.length) {
+    lines.push(
+      `- The following paths are forbidden by default: ${JSON.stringify(taskDefaults.forbiddenPaths)}. ` +
+        "If a task must modify any of these files (e.g., adding a dependency to package.json), " +
+        "include `forbiddenPaths: []` (or a narrower list) in that task's overrides so it is " +
+        "not blocked at runtime.",
+    );
+  }
+
+  if (app?.devServer) {
+    lines.push(
+      "- This project has a dev server. For tasks that produce user-facing UI (pages, " +
+        "components, visual changes), include `evaluator: { enabled: true, mode: interactive }` " +
+        "in overrides. For non-UI tasks (utilities, config, API-only, data models), either omit " +
+        "the evaluator or use `evaluator: { enabled: true, mode: diff-review }`. " +
+        "Do NOT include devServer in the evaluator — the harness injects it automatically.",
+    );
+  }
+
   lines.push(
     "- Do NOT output anything before or after the YAML. Your entire response must be valid YAML.",
   );
@@ -117,7 +154,7 @@ export function buildPlanPrompt(userPrompt: string, app?: Partial<AppSpec>): str
 }
 
 export interface TaskEnrichmentContext {
-  /** App-level configuration (from tasks/app.yaml). */
+  /** App-level configuration (from .athanor/app.yaml). */
   app: Partial<AppSpec>;
   /** The full plan spec (all tasks, name, description). */
   plan: PlanSpec;
@@ -241,11 +278,25 @@ export function buildTaskEnrichmentPrompt(context: TaskEnrichmentContext): strin
   lines.push(
     "- Generate appropriate `allowedPaths` globs based on which files the task will likely touch.",
   );
+  lines.push(
+    "- If a task modifies a manifest file (e.g., package.json) and installs dependencies, " +
+      "include the corresponding lock file (e.g., package-lock.json, pnpm-lock.yaml, yarn.lock) " +
+      "in `allowedPaths` as well.",
+  );
   lines.push("- Write specific, testable acceptance criteria.");
   lines.push("- Use the default gates and settings unless overrides specify otherwise.");
   lines.push(
     "- Consider the full plan context above. Scope this task to avoid overlap with sibling tasks.",
   );
+
+  if (app.devServer) {
+    lines.push(
+      "- If the task overrides include `evaluator.mode: interactive`, include " +
+        "`evaluator: { enabled: true, mode: interactive }` in the output YAML. " +
+        "Do NOT include devServer — the harness injects it automatically from app config.",
+    );
+  }
+
   lines.push(
     "- Do NOT output anything before or after the YAML. Your entire response must be valid YAML.",
   );

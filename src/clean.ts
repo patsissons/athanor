@@ -12,24 +12,6 @@ export interface CleanOpts {
   dryRun: boolean;
 }
 
-export function parseCleanOpts(args: string[]): CleanOpts {
-  const opts: CleanOpts = { all: false, olderThanHours: null, dryRun: false };
-  for (let i = 0; i < args.length; i++) {
-    switch (args[i]) {
-      case "--all":
-        opts.all = true;
-        break;
-      case "--older-than":
-        opts.olderThanHours = Number(args[++i]);
-        break;
-      case "--dry-run":
-        opts.dryRun = true;
-        break;
-    }
-  }
-  return opts;
-}
-
 export function parseWorktreeListPorcelain(output: string): WorktreeEntry[] {
   const entries: WorktreeEntry[] = [];
   let current: Partial<WorktreeEntry> = {};

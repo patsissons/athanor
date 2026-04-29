@@ -1,23 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCleanOpts, parseAthanorTimestamp, parseWorktreeListPorcelain } from "./clean.js";
-
-describe("parseCleanOpts", () => {
-  it("parses clean CLI flags", () => {
-    expect(parseCleanOpts(["--all", "--dry-run", "--older-than", "24"])).toEqual({
-      all: true,
-      dryRun: true,
-      olderThanHours: 24,
-    });
-  });
-
-  it("falls back to defaults when flags are absent", () => {
-    expect(parseCleanOpts([])).toEqual({
-      all: false,
-      dryRun: false,
-      olderThanHours: null,
-    });
-  });
-});
+import { parseAthanorTimestamp, parseWorktreeListPorcelain } from "./clean.js";
 
 describe("parseWorktreeListPorcelain", () => {
   it("parses worktree list output", () => {

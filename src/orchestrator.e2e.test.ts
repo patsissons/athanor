@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -305,86 +305,6 @@ describe.concurrent("runTask e2e", () => {
       );
       expect(await git(repoRoot, ["status", "--short"])).toBe("");
       expect(warnings.some((message) => message.includes("Push failed"))).toBe(true);
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it("writes completed-tasks.md after a successful task", async () => {
-    const { repoRoot, harnessRoot, cleanup } = await initRepo();
-    try {
-      const runId = makeRunId();
-      const task = createTask({
-        id: "summary-smoke",
-        title: "Summary smoke test",
-        description: "Verify completed-tasks.md is written.",
-        allowedPaths: ["src.ts"],
-        forbiddenPaths: ["package.json"],
-      });
-
-      const ok = await runTask(
-        task,
-        { targetRepoRoot: repoRoot, harnessRoot },
-        {
-          invokeAgent: async ({ cwd }) => {
-            await writeFile(join(cwd, "src.ts"), "export const ready = false;\n");
-            return { success: true, stderr: "", summary: "Updated ready flag to false." };
-          },
-          runAllGates: async () => [{ name: "typecheck", passed: true, exitCode: 0, output: "" }],
-          runCommand: async () => ({ exitCode: 0, stderr: "" }),
-          log: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
-          makeRunId: () => runId,
-        },
-      );
-
-      expect(ok).toBe(true);
-      const summaryContent = await readRepoFile(repoRoot, "tasks/completed-tasks.md");
-      expect(summaryContent).toContain("## summary-smoke: Summary smoke test");
-      expect(summaryContent).toContain("Updated ready flag to false.");
-    } finally {
-      await cleanup();
-    }
-  });
-
-  it("appends to completed-tasks.md when it already exists", async () => {
-    const { repoRoot, harnessRoot, cleanup } = await initRepo();
-    try {
-      const runId = makeRunId();
-      const task = createTask({
-        id: "append-smoke",
-        title: "Append smoke test",
-        description: "Verify completed-tasks.md is appended to.",
-        allowedPaths: ["src.ts"],
-        forbiddenPaths: ["package.json"],
-      });
-
-      // Seed an existing tasks directory and summary file.
-      await mkdir(join(repoRoot, "tasks"), { recursive: true });
-      await writeFile(
-        join(repoRoot, "tasks", "completed-tasks.md"),
-        "## prior-task: Prior Task\n\nDid something useful.\n",
-      );
-
-      const ok = await runTask(
-        task,
-        { targetRepoRoot: repoRoot, harnessRoot },
-        {
-          invokeAgent: async ({ cwd }) => {
-            await writeFile(join(cwd, "src.ts"), "export const ready = false;\n");
-            return { success: true, stderr: "", summary: "Appended a new task summary." };
-          },
-          runAllGates: async () => [{ name: "typecheck", passed: true, exitCode: 0, output: "" }],
-          runCommand: async () => ({ exitCode: 0, stderr: "" }),
-          log: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
-          makeRunId: () => runId,
-        },
-      );
-
-      expect(ok).toBe(true);
-      const summaryContent = await readRepoFile(repoRoot, "tasks/completed-tasks.md");
-      expect(summaryContent).toContain("## prior-task: Prior Task");
-      expect(summaryContent).toContain("## append-smoke: Append smoke test");
-      expect(summaryContent).toContain("Appended a new task summary.");
     } finally {
       await cleanup();
     }

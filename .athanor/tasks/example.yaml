@@ -16,3 +16,17 @@ acceptanceCriteria:
   - "The page displays a 'Don't Click me' button"
   - "When the 'Don't Click me' button is clicked, the page displays a 'Why did you click the button?' message"
   - "Tailwind classes used for styling, no custom CSS files added"
+
+# Optional: evaluator configuration for adversarial review after gates pass.
+# evaluator:
+#   enabled: true
+#   mode: diff-review          # "diff-review" (default) or "interactive"
+#   model: opus                # model for the evaluator agent
+#   criteria:                  # additional evaluation criteria beyond acceptanceCriteria
+#     - "No placeholder or lorem ipsum text"
+#   # Required when mode is "interactive":
+#   # devServer:
+#   #   command: "npm run dev"
+#   #   readyPattern: "ready on"   # string to watch for in stdout
+#   #   port: 3000
+#   #   timeoutMs: 30000

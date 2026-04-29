@@ -15,6 +15,5 @@ describe("TaskSpecSchema", () => {
     expect(task.forbiddenPaths).toEqual([]);
     expect(task.maxAgentAttempts).toBe(2);
     expect(task.model).toBe("sonnet");
-    expect(task.completedTasks).toBeUndefined();
   });
 });

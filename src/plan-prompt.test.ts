@@ -84,6 +84,53 @@ describe("buildPlanPrompt", () => {
     const prompt = buildPlanPrompt("Build something");
     expect(prompt).not.toContain("App Context");
   });
+
+  it("includes app context when app has devServer", () => {
+    const prompt = buildPlanPrompt("Build something", {
+      devServer: { command: "npm run dev", readyPattern: "ready on", port: 3000, timeoutMs: 30000 },
+    });
+    expect(prompt).toContain("App Context");
+    expect(prompt).toContain("dev server configured for interactive testing");
+  });
+
+  it("includes evaluator guidance when app has devServer", () => {
+    const prompt = buildPlanPrompt("Build something", {
+      devServer: { command: "npm run dev", readyPattern: "ready on", port: 3000, timeoutMs: 30000 },
+    });
+    expect(prompt).toContain("evaluator");
+    expect(prompt).toContain("user-facing UI");
+    expect(prompt).toContain("Do NOT include devServer");
+  });
+
+  it("omits evaluator guidance when app has no devServer", () => {
+    const prompt = buildPlanPrompt("Build something", {
+      description: "A web app.",
+    });
+    expect(prompt).not.toContain("Do NOT include devServer");
+  });
+
+  it("includes forbidden paths guidance when taskDefaults has forbiddenPaths", () => {
+    const prompt = buildPlanPrompt(
+      "Build something",
+      {},
+      {
+        forbiddenPaths: ["package.json", "package-lock.json"],
+      },
+    );
+    expect(prompt).toContain("forbidden by default");
+    expect(prompt).toContain("package.json");
+    expect(prompt).toContain("forbiddenPaths: []");
+  });
+
+  it("omits forbidden paths guidance when taskDefaults has no forbiddenPaths", () => {
+    const prompt = buildPlanPrompt("Build something", {}, {});
+    expect(prompt).not.toContain("forbidden by default");
+  });
+
+  it("omits forbidden paths guidance when taskDefaults is undefined", () => {
+    const prompt = buildPlanPrompt("Build something", {});
+    expect(prompt).not.toContain("forbidden by default");
+  });
 });
 
 describe("buildTaskEnrichmentPrompt", () => {
@@ -210,5 +257,27 @@ describe("buildTaskEnrichmentPrompt", () => {
     const prompt = buildTaskEnrichmentPrompt(makeContext());
     expect(prompt).toContain("plan context");
     expect(prompt).toContain("sibling tasks");
+  });
+
+  it("includes evaluator guidance when app has devServer", () => {
+    const prompt = buildTaskEnrichmentPrompt(
+      makeContext({
+        app: {
+          devServer: {
+            command: "npm run dev",
+            readyPattern: "ready on",
+            port: 3000,
+            timeoutMs: 30000,
+          },
+        },
+      }),
+    );
+    expect(prompt).toContain("Do NOT include devServer");
+    expect(prompt).toContain("harness injects it automatically");
+  });
+
+  it("omits evaluator guidance when app has no devServer", () => {
+    const prompt = buildTaskEnrichmentPrompt(makeContext());
+    expect(prompt).not.toContain("Do NOT include devServer");
   });
 });

@@ -3,6 +3,7 @@ import { parse } from "yaml";
 import { z } from "zod";
 import { resolve } from "node:path";
 import { loadDefaults } from "./load-defaults.js";
+import { EvaluatorConfigBaseSchema } from "./eval-spec.js";
 
 export const ValidationGateSchema = z.object({
   name: z.string(),
@@ -40,8 +41,10 @@ export const TaskSpecSchema = z.object({
   // Model
   model: z.enum(["sonnet", "opus", "haiku"]).default("sonnet"),
 
-  // Previously completed tasks summary (injected by the harness at runtime).
-  completedTasks: z.string().optional(),
+  // Evaluator configuration (opt-in adversarial review after gates pass).
+  // Uses base schema (no refinement) so interactive mode can omit devServer
+  // at parse time — app-level devServer is merged before execution.
+  evaluator: EvaluatorConfigBaseSchema.optional(),
 });
 
 export type ValidationGate = z.infer<typeof ValidationGateSchema>;
@@ -51,7 +54,7 @@ export async function loadTaskSpec(path: string, targetRepoRoot?: string): Promi
   const raw = await readFile(path, "utf8");
   const parsed = parse(raw);
   if (targetRepoRoot) {
-    const defaultsPath = resolve(targetRepoRoot, "tasks", "task.default.yaml");
+    const defaultsPath = resolve(targetRepoRoot, ".athanor", "task.default.yaml");
     const defaults = await loadDefaults(defaultsPath, TaskSpecSchema.partial());
     const merged = { ...defaults, ...parsed };
     return TaskSpecSchema.parse(merged);

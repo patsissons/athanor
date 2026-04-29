@@ -1,6 +1,18 @@
+import { writeFile, unlink } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { execa } from "execa";
 import chalk from "chalk";
 import { log } from "./logger.js";
+
+export interface McpServerConfig {
+  command: string;
+  args: string[];
+}
+
+export interface McpConfig {
+  mcpServers: Record<string, McpServerConfig>;
+}
 
 export interface AgentResult {
   success: boolean;
@@ -15,8 +27,18 @@ export async function invokeClaudeCode(opts: {
   cwd: string;
   model: string;
   timeoutSeconds?: number;
+  mcpConfig?: McpConfig;
 }): Promise<AgentResult> {
-  const { prompt, cwd, model, timeoutSeconds = 600 } = opts;
+  const { prompt, cwd, model, timeoutSeconds = 600, mcpConfig } = opts;
+
+  let mcpConfigPath: string | undefined;
+  if (mcpConfig) {
+    mcpConfigPath = join(
+      tmpdir(),
+      `athanor-mcp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`,
+    );
+    await writeFile(mcpConfigPath, JSON.stringify(mcpConfig), "utf8");
+  }
 
   const args = [
     "--print",
@@ -26,6 +48,7 @@ export async function invokeClaudeCode(opts: {
     "--output-format",
     "stream-json",
     "--verbose",
+    ...(mcpConfigPath ? ["--mcp-config", mcpConfigPath, "--strict-mcp-config"] : []),
     prompt,
   ];
 
@@ -34,6 +57,7 @@ export async function invokeClaudeCode(opts: {
     reject: false,
     timeout: timeoutSeconds * 1000,
     buffer: true,
+    stdin: "ignore",
   });
 
   // Collect the result text from the final stream event while printing
@@ -58,6 +82,15 @@ export async function invokeClaudeCode(opts: {
 
   const result = await child;
 
+  // Clean up temp MCP config file
+  if (mcpConfigPath) {
+    try {
+      await unlink(mcpConfigPath);
+    } catch {
+      // Best-effort cleanup
+    }
+  }
+
   const summary = extractSummary(resultText);
 
   return {
@@ -69,7 +102,7 @@ export async function invokeClaudeCode(opts: {
   };
 }
 
-function extractSummary(resultText: string | undefined): string | undefined {
+export function extractSummary(resultText: string | undefined): string | undefined {
   if (!resultText) return undefined;
   const match = resultText.match(/<task-summary>([\s\S]*?)<\/task-summary>/);
   return match?.[1]?.trim();
@@ -104,7 +137,7 @@ interface CollectedResult {
  * Render a single stream-json event as a human-readable line.
  * Returns the collected result data when a result event is encountered.
  */
-function prettyPrintEvent(line: string): CollectedResult | undefined {
+export function prettyPrintEvent(line: string): CollectedResult | undefined {
   if (!line.trim()) return undefined;
 
   let evt: ClaudeEvent;
@@ -165,7 +198,7 @@ function prettyPrintEvent(line: string): CollectedResult | undefined {
   return undefined;
 }
 
-function summarizeToolInput(name: string, input: unknown): string {
+export function summarizeToolInput(name: string, input: unknown): string {
   if (!input || typeof input !== "object") return "";
   const i = input as Record<string, unknown>;
   if (typeof i.file_path === "string") return i.file_path;

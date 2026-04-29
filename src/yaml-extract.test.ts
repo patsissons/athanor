@@ -37,4 +37,24 @@ describe("extractYaml", () => {
   it("throws when YAML parses to an array", () => {
     expect(() => extractYaml("- one\n- two")).toThrow(/Could not extract/);
   });
+
+  it("extracts YAML preceded by conversational prose", () => {
+    const input =
+      "Now I have a complete picture. Let me produce the plan.\n\n" +
+      "id: build-app-v1\n" +
+      "name: Build App v1\n" +
+      "description: |\n" +
+      "  Build the full app.\n" +
+      "tasks:\n" +
+      "  - id: t1\n" +
+      "    description: do something";
+    const result = extractYaml(input);
+    expect(result).toContain("id: build-app-v1");
+    expect(result).not.toContain("complete picture");
+  });
+
+  it("extracts YAML preceded by multiple prose lines", () => {
+    const input = "Here is my analysis.\nI will now generate the plan.\n\nid: test\nname: foo";
+    expect(extractYaml(input)).toBe("id: test\nname: foo");
+  });
 });
