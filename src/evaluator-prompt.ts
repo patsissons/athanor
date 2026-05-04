@@ -298,6 +298,28 @@ export function buildEnrichmentCriticPrompt(opts: {
   lines.push("- Set `passed: true` if the spec is good enough to send to a coding agent as-is.");
   lines.push("- `severity` must be exactly one of: `critical`, `major`, or `minor`.");
   lines.push(
+    "- **If `passed` is false, you MUST list at least one entry in `issues`. " +
+      "An empty `issues` list with `passed: false` is invalid.**",
+  );
+  lines.push(
+    "- Specific findings — vague criteria, missing paths, drift from a sibling, " +
+      "scope overlap — belong in `issues`, NOT in `summary`. The `summary` " +
+      "field is for one-paragraph high-level framing only. If a finding is " +
+      'specific enough that a downstream agent could act on it ("rename X to ' +
+      'Y", "add path Z to allowedPaths"), it must appear as its own `issues` ' +
+      "entry, not be buried inside the summary prose.",
+  );
+  lines.push(
+    "- Each `issues[].criterion` should quote the failing acceptance criterion, " +
+      "guideline, or sibling-task identifier verbatim, OR name a structural " +
+      'category ("Cross-task consistency", "Acceptance criteria quality", ' +
+      '"allowedPaths coverage"). Do not leave `criterion` empty.',
+  );
+  lines.push(
+    "- Each `issues[].description` must point at a specific symbol, path, or " +
+      'criterion text — not a generic phrase like "too vague".',
+  );
+  lines.push(
     "- Do NOT output anything before or after the YAML. Your entire response must be valid YAML.",
   );
 
@@ -308,8 +330,12 @@ const CRITIC_RESULT_SHAPE = `\
 passed: false
 issues:
   - severity: critical   # must be one of: critical, major, minor
+    criterion: "Cross-task consistency"
+    description: "This task imports IsolationBackend from src/isolation/types.ts but the isolation-backend-interface task exports it from src/isolation/index.ts."
+    suggestion: "Change the import path in this task's description to src/isolation/index.ts to match the sibling."
+  - severity: major
     criterion: "Acceptance criteria quality"
-    description: "Criterion 2 is vague — 'works correctly' is not testable"
+    description: "Criterion 2 says 'works correctly' which is not testable."
     suggestion: "Rewrite as: 'Returns a 200 status with JSON body containing items array'"
 summary: |
-  One-paragraph summary of the review.`;
+  One-paragraph high-level framing only. Specific findings go in issues[].`;
