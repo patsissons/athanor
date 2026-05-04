@@ -60,6 +60,7 @@ export async function runPlan(
     planPath?: string;
     stopAfter?: "plan" | "tasks";
     targetRepoRoot?: string;
+    enrichmentModel?: string;
     enrichmentCritic?: { enabled: boolean; model?: string; maxRetries?: number };
     reCritic?: boolean;
   },
@@ -213,7 +214,8 @@ export async function runPlan(
   // ─── Phase 2: Task Generation ──────────────────────────────────
   const tasksDir = resolve(d.targetRepoRoot, ".athanor", "tasks", plan.id);
 
-  d.log.info("Phase 2: Generating task specs with Sonnet");
+  const enrichmentModel = opts.enrichmentModel ?? "sonnet";
+  d.log.info(`Phase 2: Generating task specs with ${enrichmentModel}`);
   await d.mkdir(tasksDir);
 
   // Check which tasks already have YAML files so we can skip them
@@ -268,6 +270,7 @@ export async function runPlan(
       taskId: planTask.id,
       attemptLabel: "initial enrichment",
       yamlRetries: 1,
+      model: enrichmentModel,
     });
     if (!initialSpec) {
       return { success: false };
@@ -336,6 +339,7 @@ export async function runPlan(
           taskId: planTask.id,
           attemptLabel: `critic retry ${attempt + 1}`,
           yamlRetries: 1,
+          model: enrichmentModel,
         });
 
         if (!reEnriched) {
@@ -379,8 +383,9 @@ async function invokeAndParseTaskSpec(opts: {
   taskId: string;
   attemptLabel: string;
   yamlRetries: number;
+  model: string;
 }): Promise<TaskSpec | null> {
-  const { d, basePrompt, taskId, attemptLabel, yamlRetries } = opts;
+  const { d, basePrompt, taskId, attemptLabel, yamlRetries, model } = opts;
   let lastErr: string | undefined;
 
   for (let attempt = 0; attempt <= yamlRetries; attempt++) {
@@ -395,7 +400,7 @@ async function invokeAndParseTaskSpec(opts: {
     const result = await d.invokeAgent({
       prompt,
       cwd: d.targetRepoRoot,
-      model: "sonnet",
+      model,
     });
 
     if (!result.success) {

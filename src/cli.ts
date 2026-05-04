@@ -57,6 +57,10 @@ program
   .option("--stop-after <phase>", "Stop after phase (plan or tasks)")
   .option("--enrichment-critic", "Enable enrichment critic for task specs")
   .option(
+    "--enrichment-model <model>",
+    "Model used to enrich each task spec (default: sonnet; e.g. opus, haiku)",
+  )
+  .option(
     "--critic-max-retries <n>",
     "Max critic→re-enrich retries per task (default: 1)",
     parseFloat,
@@ -73,6 +77,7 @@ program
         fromPlan?: string;
         stopAfter?: string;
         enrichmentCritic?: boolean;
+        enrichmentModel?: string;
         criticMaxRetries?: number;
         reCritic?: boolean;
         runPlan?: boolean;
@@ -124,6 +129,7 @@ program
         planPath: opts.fromPlan ? resolve(targetRepoRoot, opts.fromPlan) : undefined,
         stopAfter: opts.stopAfter as "plan" | "tasks" | undefined,
         targetRepoRoot,
+        ...(opts.enrichmentModel ? { enrichmentModel: opts.enrichmentModel } : {}),
         enrichmentCritic: opts.enrichmentCritic
           ? {
               enabled: true,

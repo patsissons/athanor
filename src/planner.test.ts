@@ -160,6 +160,24 @@ describe("runPlan", () => {
       await runPlan({ prompt: "test", stopAfter: "tasks" }, deps);
     });
 
+    it("uses an overridden enrichment model when supplied", async () => {
+      let callCount = 0;
+      const deps = makeDeps({
+        invokeAgent: vi.fn(async (opts) => {
+          callCount++;
+          if (callCount === 1) {
+            // Phase 1 plan generation always uses opus regardless.
+            return { success: true, stdout: stringify(samplePlan), stderr: "", parsed: null };
+          }
+          // Every Phase 2 enrichment call should use the override.
+          expect(opts.model).toBe("opus");
+          return { success: true, stdout: stringify(sampleTask), stderr: "", parsed: null };
+        }),
+      });
+
+      await runPlan({ prompt: "test", stopAfter: "tasks", enrichmentModel: "opus" }, deps);
+    });
+
     it("skips tasks that already have YAML files", async () => {
       let callCount = 0;
       const deps = makeDeps({
