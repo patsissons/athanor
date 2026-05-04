@@ -57,6 +57,11 @@ program
   .option("--stop-after <phase>", "Stop after phase (plan or tasks)")
   .option("--enrichment-critic", "Enable enrichment critic for task specs")
   .option(
+    "--critic-max-retries <n>",
+    "Max critic→re-enrich retries per task (default: 1)",
+    parseFloat,
+  )
+  .option(
     "--re-critic",
     "Read-only audit: run the critic over existing enriched task specs without rewriting them. Requires --from-plan.",
   )
@@ -68,6 +73,7 @@ program
         fromPlan?: string;
         stopAfter?: string;
         enrichmentCritic?: boolean;
+        criticMaxRetries?: number;
         reCritic?: boolean;
         runPlan?: boolean;
       },
@@ -92,6 +98,13 @@ program
         console.error("--re-critic requires --from-plan");
         process.exit(1);
       }
+      if (
+        opts.criticMaxRetries !== undefined &&
+        (!Number.isInteger(opts.criticMaxRetries) || opts.criticMaxRetries < 0)
+      ) {
+        console.error("--critic-max-retries must be a non-negative integer");
+        process.exit(1);
+      }
 
       let targetRepoRoot: string;
       try {
@@ -111,7 +124,12 @@ program
         planPath: opts.fromPlan ? resolve(targetRepoRoot, opts.fromPlan) : undefined,
         stopAfter: opts.stopAfter as "plan" | "tasks" | undefined,
         targetRepoRoot,
-        enrichmentCritic: opts.enrichmentCritic ? { enabled: true } : undefined,
+        enrichmentCritic: opts.enrichmentCritic
+          ? {
+              enabled: true,
+              ...(opts.criticMaxRetries !== undefined ? { maxRetries: opts.criticMaxRetries } : {}),
+            }
+          : undefined,
         reCritic: opts.reCritic ?? false,
       });
 

@@ -106,6 +106,21 @@ describe("athanor CLI", () => {
         await rm(tmp, { recursive: true, force: true });
       }
     });
+
+    it("rejects `plan --critic-max-retries` with a negative value", async () => {
+      const tmp = await mkdtemp(resolve(tmpdir(), "athanor-cli-maxretries-neg-"));
+      try {
+        await execa("git", ["init"], { cwd: tmp });
+        const result = await runCli(
+          ["plan", "Add a thing", "--enrichment-critic", "--critic-max-retries", "-1"],
+          { cwd: tmp },
+        );
+        expect(result.exitCode).toBe(1);
+        expect(result.stderr).toMatch(/non-negative integer/);
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("not-a-git-repo guardrail", () => {
