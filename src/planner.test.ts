@@ -453,4 +453,15 @@ describe("runPlan", () => {
       expect(messages.error.some((m) => m.includes("Failed to load plan"))).toBe(true);
     });
   });
+
+  describe("--re-critic (audit mode)", () => {
+    it("rejects when --re-critic is supplied without --from-plan", async () => {
+      const { logger, messages } = makeLogger();
+      const deps = makeDeps({ log: logger });
+      const result = await runPlan({ prompt: "x", reCritic: true }, deps);
+
+      expect(result.success).toBe(false);
+      expect(messages.error.some((m) => m.includes("--re-critic requires --from-plan"))).toBe(true);
+    });
+  });
 });

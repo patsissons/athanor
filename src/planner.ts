@@ -61,6 +61,7 @@ export async function runPlan(
     stopAfter?: "plan" | "tasks";
     targetRepoRoot?: string;
     enrichmentCritic?: { enabled: boolean; model?: string; maxRetries?: number };
+    reCritic?: boolean;
   },
   deps: Partial<PlanDeps> = {},
 ): Promise<PlanResult> {
@@ -76,6 +77,10 @@ export async function runPlan(
   }
   if (!opts.prompt && !opts.planPath) {
     d.log.error("No prompt provided");
+    return { success: false };
+  }
+  if (opts.reCritic && !opts.planPath) {
+    d.log.error("--re-critic requires --from-plan");
     return { success: false };
   }
 
@@ -144,6 +149,65 @@ export async function runPlan(
       d.log.info("Stopping after plan generation (--stop-after plan)");
       return { success: true, planPath };
     }
+  }
+
+  // ─── Audit mode: --re-critic ────────────────────────────────────
+  // Read-only pass that runs the critic over already-enriched task
+  // specs without rewriting them. Useful after the critic prompt or
+  // schema changes, or when iterating on a plan's task descriptions.
+  if (opts.reCritic) {
+    const tasksDir = resolve(d.targetRepoRoot, ".athanor", "tasks", plan.id);
+    const criticModel = opts.enrichmentCritic?.model ?? "opus";
+
+    d.log.info(`Re-critic audit: loading enriched specs from ${tasksDir}`);
+
+    const taskSpecs: TaskSpec[] = [];
+    for (const planTask of plan.tasks) {
+      const taskPath = resolve(tasksDir, `${planTask.id}.yaml`);
+      try {
+        const raw = await readFile(taskPath, "utf8");
+        taskSpecs.push(TaskSpecSchema.parse(parse(raw)));
+      } catch (err) {
+        d.log.warn(`Could not load enriched task ${planTask.id}: ${String(err)}`);
+      }
+    }
+
+    if (taskSpecs.length === 0) {
+      d.log.error(
+        `No enriched task specs found under ${tasksDir}. Run \`athanor plan --from-plan\` first.`,
+      );
+      return { success: false };
+    }
+
+    let anyRejected = false;
+    for (const taskSpec of taskSpecs) {
+      const siblings = taskSpecs.filter((t) => t.id !== taskSpec.id);
+      d.log.info(`Re-critic on ${taskSpec.id} (${criticModel})`);
+      const criticResult = await d.critiqueTaskSpec({
+        taskSpec,
+        plan,
+        cwd: d.targetRepoRoot,
+        model: criticModel,
+        enrichedSiblings: siblings,
+      });
+
+      if (criticResult.passed) {
+        d.log.info(`  approved`);
+      } else {
+        anyRejected = true;
+        d.log.warn(`  rejected: ${criticResult.summary}`);
+        for (const issue of criticResult.issues ?? []) {
+          d.log.warn(`    [${issue.severity}] ${issue.criterion}: ${issue.description}`);
+        }
+      }
+    }
+
+    d.log.info(
+      anyRejected
+        ? `Re-critic finished with rejections; task files were NOT modified.`
+        : `Re-critic finished; all enriched specs approved.`,
+    );
+    return { success: !anyRejected, planPath };
   }
 
   // ─── Phase 2: Task Generation ──────────────────────────────────

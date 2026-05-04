@@ -94,6 +94,18 @@ describe("athanor CLI", () => {
         await rm(tmp, { recursive: true, force: true });
       }
     });
+
+    it("rejects `plan --re-critic` when --from-plan is not supplied", async () => {
+      const tmp = await mkdtemp(resolve(tmpdir(), "athanor-cli-recritic-noplan-"));
+      try {
+        await execa("git", ["init"], { cwd: tmp });
+        const result = await runCli(["plan", "Add a thing", "--re-critic"], { cwd: tmp });
+        expect(result.exitCode).toBe(1);
+        expect(result.stderr).toMatch(/--re-critic requires --from-plan/);
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("not-a-git-repo guardrail", () => {

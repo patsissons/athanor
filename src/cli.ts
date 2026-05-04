@@ -56,6 +56,10 @@ program
   .option("--from-plan <path>", "Skip plan generation; enrich an existing plan YAML")
   .option("--stop-after <phase>", "Stop after phase (plan or tasks)")
   .option("--enrichment-critic", "Enable enrichment critic for task specs")
+  .option(
+    "--re-critic",
+    "Read-only audit: run the critic over existing enriched task specs without rewriting them. Requires --from-plan.",
+  )
   .option("--run-plan", "Automatically execute the plan after generation")
   .action(
     async (
@@ -64,6 +68,7 @@ program
         fromPlan?: string;
         stopAfter?: string;
         enrichmentCritic?: boolean;
+        reCritic?: boolean;
         runPlan?: boolean;
       },
       cmd: Command,
@@ -81,6 +86,10 @@ program
       }
       if (!prompt && !opts.fromPlan) {
         console.error("Provide a prompt or --from-plan <path>");
+        process.exit(1);
+      }
+      if (opts.reCritic && !opts.fromPlan) {
+        console.error("--re-critic requires --from-plan");
         process.exit(1);
       }
 
@@ -103,6 +112,7 @@ program
         stopAfter: opts.stopAfter as "plan" | "tasks" | undefined,
         targetRepoRoot,
         enrichmentCritic: opts.enrichmentCritic ? { enabled: true } : undefined,
+        reCritic: opts.reCritic ?? false,
       });
 
       if (!result.success) {
