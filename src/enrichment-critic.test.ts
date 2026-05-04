@@ -133,4 +133,56 @@ describe("critiqueTaskSpec", () => {
 
     expect(deps.invokeAgent).toHaveBeenCalledWith(expect.objectContaining({ model: "sonnet" }));
   });
+
+  it("includes already-enriched siblings in the critic prompt", async () => {
+    const deps = makeDeps({
+      success: true,
+      stdout: stringify({ passed: true, issues: [], summary: "ok" }),
+      stderr: "",
+    });
+
+    const enrichedSibling = TaskSpecSchema.parse({
+      id: "add-styles",
+      title: "Add styles",
+      description: "Style the page using src/styles/page.css.",
+      acceptanceCriteria: ["styles applied"],
+      gates: [{ name: "typecheck", command: "npm run typecheck" }],
+    });
+
+    await critiqueTaskSpec({
+      taskSpec: makeTask(),
+      plan: samplePlan,
+      cwd: "/repo",
+      model: "opus",
+      deps,
+      enrichedSiblings: [enrichedSibling],
+    });
+
+    const prompt = vi.mocked(deps.invokeAgent).mock.calls[0][0].prompt;
+    expect(prompt).toContain("## Already-Enriched Siblings");
+    expect(prompt).toContain("### add-styles");
+    expect(prompt).toContain("src/styles/page.css");
+    // The cross-task consistency checklist item must be present.
+    expect(prompt).toContain("Cross-task consistency");
+  });
+
+  it("omits the Already-Enriched Siblings section when none are enriched", async () => {
+    const deps = makeDeps({
+      success: true,
+      stdout: stringify({ passed: true, issues: [], summary: "ok" }),
+      stderr: "",
+    });
+
+    await critiqueTaskSpec({
+      taskSpec: makeTask(),
+      plan: samplePlan,
+      cwd: "/repo",
+      model: "opus",
+      deps,
+      // enrichedSiblings omitted
+    });
+
+    const prompt = vi.mocked(deps.invokeAgent).mock.calls[0][0].prompt;
+    expect(prompt).not.toContain("## Already-Enriched Siblings");
+  });
 });

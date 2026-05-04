@@ -210,8 +210,9 @@ export function buildEnrichmentCriticPrompt(opts: {
   taskYaml: string;
   planContext: string;
   siblingTaskIds: string[];
+  enrichedSiblings?: { id: string; yaml: string }[];
 }): string {
-  const { taskYaml, planContext, siblingTaskIds } = opts;
+  const { taskYaml, planContext, siblingTaskIds, enrichedSiblings = [] } = opts;
   const lines: string[] = [];
 
   lines.push("# Task Specification Critic");
@@ -219,7 +220,8 @@ export function buildEnrichmentCriticPrompt(opts: {
   lines.push(
     "You are a QA critic reviewing a task specification before it is sent to a " +
       "coding agent. Your goal is to catch problems in the spec that would waste " +
-      "execution tokens — vague criteria, missing paths, scope overlap.",
+      "execution tokens — vague criteria, missing paths, scope overlap, and " +
+      "drift from sibling tasks (file paths, type names, function signatures).",
   );
   lines.push("");
 
@@ -234,6 +236,27 @@ export function buildEnrichmentCriticPrompt(opts: {
     lines.push("These other tasks exist in the same plan (check for scope overlap):");
     siblingTaskIds.forEach((id) => lines.push(`- ${id}`));
     lines.push("");
+  }
+
+  if (enrichedSiblings.length > 0) {
+    lines.push("## Already-Enriched Siblings");
+    lines.push("");
+    lines.push(
+      "The following sibling tasks have already been enriched. Use them to " +
+        "verify cross-task consistency: file paths, exported type names, " +
+        "function signatures, and schema field names must match exactly. If " +
+        "this task references a symbol or path defined by a sibling, it must " +
+        "match the sibling's spec verbatim.",
+    );
+    lines.push("");
+    for (const sibling of enrichedSiblings) {
+      lines.push(`### ${sibling.id}`);
+      lines.push("");
+      lines.push("```yaml");
+      lines.push(sibling.yaml);
+      lines.push("```");
+      lines.push("");
+    }
   }
 
   lines.push("## Task Specification to Review");
@@ -254,6 +277,14 @@ export function buildEnrichmentCriticPrompt(opts: {
   lines.push("3. Is there scope overlap with sibling tasks?");
   lines.push("4. Are there obvious missing acceptance criteria?");
   lines.push("5. Is the description detailed enough for a coding agent to implement?");
+  lines.push(
+    "6. **Cross-task consistency**: do file paths, exported type names, " +
+      "function signatures, and schema field names referenced in this spec " +
+      "match the already-enriched siblings above? Flag any drift as a " +
+      "critical issue — paths or names invented in this spec that don't " +
+      "match what a sibling has already established will cause integration " +
+      "failures when the agent runs.",
+  );
   lines.push("");
 
   lines.push("## Output Format");

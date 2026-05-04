@@ -13,6 +13,11 @@ export interface CriticDeps {
 /**
  * Run a single-pass critic on an enriched task spec.
  * Returns the critic's evaluation result.
+ *
+ * `enrichedSiblings` is the list of sibling task specs that have already
+ * been enriched in the current run. Passing them lets the critic catch
+ * cross-task drift — file paths, type names, function signatures invented
+ * in this spec that don't match what a sibling has already established.
  */
 export async function critiqueTaskSpec(opts: {
   taskSpec: TaskSpec;
@@ -20,8 +25,9 @@ export async function critiqueTaskSpec(opts: {
   cwd: string;
   model: string;
   deps: CriticDeps;
+  enrichedSiblings?: TaskSpec[];
 }): Promise<EvalResult> {
-  const { taskSpec, plan, cwd, model, deps } = opts;
+  const { taskSpec, plan, cwd, model, deps, enrichedSiblings = [] } = opts;
 
   const siblingTaskIds = plan.tasks.filter((t) => t.id !== taskSpec.id).map((t) => t.id);
 
@@ -39,6 +45,7 @@ export async function critiqueTaskSpec(opts: {
     taskYaml: stringify(taskSpec),
     planContext,
     siblingTaskIds,
+    enrichedSiblings: enrichedSiblings.map((s) => ({ id: s.id, yaml: stringify(s) })),
   });
 
   const result = await deps.invokeAgent({ prompt, cwd, model });

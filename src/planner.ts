@@ -1,4 +1,4 @@
-import { mkdir, writeFile, readdir } from "node:fs/promises";
+import { mkdir, writeFile, readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parse, stringify } from "yaml";
 import { PlanSpecSchema, loadPlanSpec, type PlanSpec } from "./plan-spec.js";
@@ -21,6 +21,7 @@ export interface PlanDeps {
     plan: PlanSpec;
     cwd: string;
     model: string;
+    enrichedSiblings?: TaskSpec[];
   }): Promise<EvalResult>;
   loadAppDefaults(targetRepoRoot: string): Promise<Partial<AppSpec>>;
   loadTaskDefaults(targetRepoRoot: string): Promise<Partial<TaskSpec>>;
@@ -162,6 +163,24 @@ export async function runPlan(
     existingFiles.filter((f) => f.endsWith(".yaml")).map((f) => f.replace(/\.yaml$/, "")),
   );
 
+  // Track enriched siblings so the critic can detect cross-task drift in
+  // file paths, type names, and signatures. Pre-load any task specs that
+  // already exist on disk (resume case) so the first new task enriched
+  // in this run still sees prior siblings.
+  const enrichedSiblings: TaskSpec[] = [];
+  for (const planTask of plan.tasks) {
+    if (!existingTaskIds.has(planTask.id)) continue;
+    const existingPath = resolve(tasksDir, `${planTask.id}.yaml`);
+    try {
+      const raw = await readFile(existingPath, "utf8");
+      enrichedSiblings.push(TaskSpecSchema.parse(parse(raw)));
+    } catch (err) {
+      d.log.warn(
+        `Could not load existing task ${planTask.id} for cross-task context: ${String(err)}`,
+      );
+    }
+  }
+
   for (const planTask of plan.tasks) {
     if (existingTaskIds.has(planTask.id)) {
       d.log.info(`Skipping already created task: ${planTask.id}`);
@@ -212,6 +231,7 @@ export async function runPlan(
         plan,
         cwd: d.targetRepoRoot,
         model: criticModel,
+        enrichedSiblings,
       });
 
       if (!criticResult.passed) {
@@ -264,6 +284,7 @@ export async function runPlan(
     const taskPath = resolve(tasksDir, `${planTask.id}.yaml`);
     await d.writeFile(taskPath, stringify(taskSpec));
     d.log.info(`Task written to ${taskPath}`);
+    enrichedSiblings.push(taskSpec);
   }
 
   if (opts.stopAfter === "tasks") {
