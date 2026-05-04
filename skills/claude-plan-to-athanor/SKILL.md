@@ -27,6 +27,7 @@ want to drive implementation through athanor's harness rather than
 implement directly.
 
 Skip this skill if:
+
 - The user wants to implement directly without athanor (no harness needed).
 - The plan is a single change (use `athanor run` against one task spec).
 - The plan is too vague to break into bounded tasks (push back; ask
@@ -50,6 +51,7 @@ and the descriptions reference real symbols / files.
 ### 2. Distill the plan into 5–15 focused tasks
 
 Each task should:
+
 - Touch one module, one concern, or one well-defined refactor step.
 - Be implementable independently once its prerequisites have landed.
 - Have a description rich enough (300–600 words) that Sonnet's
@@ -86,16 +88,16 @@ tasks:
       tasks. Include code snippets where they pin the contract.
     overrides:
       # Use overrides ONLY where defaults are wrong:
-      model: opus              # for cross-cutting / high-stakes tasks
-      allowedPaths: ["src/foo.ts", "src/foo.test.ts"]  # tighten scope
+      model: opus # for cross-cutting / high-stakes tasks
+      allowedPaths: ["src/foo.ts", "src/foo.test.ts"] # tighten scope
       # gates: …               # only override when defaults don't fit
 ```
 
 Validate the YAML parses before going further:
 
 ```ts
-import { loadPlanSpec } from './src/plan-spec.js';
-const p = await loadPlanSpec('.athanor/plans/<id>.yaml');
+import { loadPlanSpec } from "./src/plan-spec.js";
+const p = await loadPlanSpec(".athanor/plans/<id>.yaml");
 console.log(`OK: ${p.id} – ${p.tasks.length} tasks`);
 ```
 
@@ -115,6 +117,14 @@ critic sees every already-enriched sibling so it can flag cross-task
 drift in file paths, type names, and signatures. Tasks that exhaust
 retries are written with a `# CRITIC OVERRIDDEN` header listing the
 unresolved issues.
+
+If a follow-up run still hits stubborn drift on the same tasks, add
+`--enrichment-model opus` to escalate Phase 2 enrichment from Sonnet
+to Opus. Opus is measurably better at "do exactly what the critic's
+verbatim suggestion says" and at holding multiple sibling-imposed
+constraints simultaneously. Cost is real (each Opus enrichment is
+slower and pricier), so reach for it only after a Sonnet pass with
+maxRetries=2 has already left specs overridden.
 
 ### 5. Audit the output
 
