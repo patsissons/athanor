@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
-import { runPlan, type PlanDeps } from "./planner.js";
+import { runPlan, renderUnresolvedCriticHeader, type PlanDeps } from "./planner.js";
 import type { PlanSpec } from "./plan-spec.js";
 import type { TaskSpec } from "./task-spec.js";
 import { TaskSpecSchema } from "./task-spec.js";
@@ -451,6 +451,75 @@ describe("runPlan", () => {
 
       expect(result.success).toBe(false);
       expect(messages.error.some((m) => m.includes("Failed to load plan"))).toBe(true);
+    });
+  });
+
+  describe("unresolved critic header", () => {
+    it("prepends a critic comment block when retries are exhausted", async () => {
+      let callCount = 0;
+      const critic = vi.fn().mockResolvedValue({
+        passed: false,
+        issues: [
+          {
+            severity: "critical",
+            criterion: "Cross-task consistency",
+            description: "Path src/foo disagrees with sibling src/bar",
+            suggestion: "Use src/bar",
+          },
+        ],
+        summary: "Still bad after retry.",
+      });
+
+      let lastWrite: { path: string; content: string } | undefined;
+      const deps = makeDeps({
+        invokeAgent: vi.fn(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return { success: true, stdout: stringify(samplePlan), stderr: "", parsed: null };
+          }
+          return { success: true, stdout: stringify(sampleTask), stderr: "", parsed: null };
+        }),
+        critiqueTaskSpec: critic,
+        writeFile: vi.fn(async (path, content) => {
+          // Capture the LAST task write; plan write happens first.
+          if (path.endsWith("add-favorites-button.yaml")) {
+            lastWrite = { path, content };
+          }
+        }),
+      });
+
+      await runPlan(
+        {
+          prompt: "test",
+          stopAfter: "tasks",
+          enrichmentCritic: { enabled: true, maxRetries: 1 },
+        },
+        deps,
+      );
+
+      expect(lastWrite).toBeDefined();
+      expect(lastWrite!.content).toMatch(/^# ── CRITIC OVERRIDDEN/);
+      expect(lastWrite!.content).toContain("Still bad after retry.");
+      expect(lastWrite!.content).toContain("[critical] Cross-task consistency");
+      expect(lastWrite!.content).toContain("Path src/foo disagrees");
+      expect(lastWrite!.content).toContain("suggestion: Use src/bar");
+      // The spec body must still parse — i.e. comments are followed by valid YAML.
+      const yamlOnly = lastWrite!.content
+        .split("\n")
+        .filter((l) => !l.startsWith("#"))
+        .join("\n");
+      expect(yamlOnly).toContain("id: add-favorites-page");
+    });
+
+    it("renderUnresolvedCriticHeader handles missing fields gracefully", () => {
+      const header = renderUnresolvedCriticHeader({
+        passed: false,
+        issues: [],
+        summary: "Just a summary, no issues.",
+      });
+      expect(header).toContain("CRITIC OVERRIDDEN");
+      expect(header).toContain("Just a summary, no issues.");
+      expect(header).not.toContain("Unresolved issues");
     });
   });
 

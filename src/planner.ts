@@ -287,6 +287,7 @@ export async function runPlan(
     }
 
     // ─── Optional: enrichment critic with bounded retry loop ─────
+    let unresolvedCritic: EvalResult | undefined;
     if (opts.enrichmentCritic?.enabled) {
       const criticModel = opts.enrichmentCritic.model ?? "opus";
       const maxRetries = opts.enrichmentCritic.maxRetries ?? 1;
@@ -310,6 +311,7 @@ export async function runPlan(
         }
 
         if (attempt >= maxRetries) {
+          unresolvedCritic = criticResult;
           d.log.warn(
             `Critic still rejected ${planTask.id} after ${attempt} re-enrichment(s); using last spec. Last summary: ${criticResult.summary}`,
           );
@@ -347,6 +349,7 @@ export async function runPlan(
         });
 
         if (!retryResult.success) {
+          unresolvedCritic = criticResult;
           d.log.warn(`Re-enrichment agent failed for ${planTask.id}, using last accepted spec`);
           break;
         }
@@ -356,6 +359,7 @@ export async function runPlan(
           taskSpec = TaskSpecSchema.parse(parse(retryYaml));
           d.log.info(`Re-enrichment succeeded for ${planTask.id}; re-running critic`);
         } catch (err) {
+          unresolvedCritic = criticResult;
           d.log.warn(
             `Re-enrichment parse failed for ${planTask.id}, using last accepted spec: ${String(err)}`,
           );
@@ -367,7 +371,10 @@ export async function runPlan(
     }
 
     const taskPath = resolve(tasksDir, `${planTask.id}.yaml`);
-    await d.writeFile(taskPath, stringify(taskSpec));
+    const fileContent = unresolvedCritic
+      ? renderUnresolvedCriticHeader(unresolvedCritic) + stringify(taskSpec)
+      : stringify(taskSpec);
+    await d.writeFile(taskPath, fileContent);
     d.log.info(`Task written to ${taskPath}`);
     enrichedSiblings.push(taskSpec);
   }
@@ -377,4 +384,42 @@ export async function runPlan(
   }
 
   return { success: true, planPath };
+}
+
+/**
+ * Build a YAML comment block describing critic concerns that were
+ * not resolved before retries were exhausted. Prepended to the task
+ * YAML so an implementing agent reading the file sees the open
+ * issues — the comments are ignored by the YAML parser, so the spec
+ * still loads cleanly.
+ */
+export function renderUnresolvedCriticHeader(critic: EvalResult): string {
+  const lines: string[] = [];
+  lines.push("# ── CRITIC OVERRIDDEN ──────────────────────────────────────────");
+  lines.push("# This spec was kept after the critic→re-enrich retry budget was");
+  lines.push("# exhausted. Address the issues below before sending to a coding agent,");
+  lines.push("# or accept them as known limitations.");
+  lines.push("#");
+  lines.push("# Last critic summary:");
+  for (const line of (critic.summary ?? "").split("\n")) {
+    lines.push(`#   ${line}`);
+  }
+  if (critic.issues && critic.issues.length > 0) {
+    lines.push("#");
+    lines.push("# Unresolved issues:");
+    for (const issue of critic.issues) {
+      lines.push(`#   [${issue.severity}] ${issue.criterion}`);
+      for (const dline of issue.description.split("\n")) {
+        lines.push(`#     ${dline}`);
+      }
+      if (issue.suggestion) {
+        for (const sline of issue.suggestion.split("\n")) {
+          lines.push(`#     suggestion: ${sline}`);
+        }
+      }
+    }
+  }
+  lines.push("# ──────────────────────────────────────────────────────────────");
+  lines.push("");
+  return lines.join("\n");
 }
