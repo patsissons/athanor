@@ -258,33 +258,21 @@ export async function runPlan(
       targetTaskId: planTask.id,
       taskDefaults,
     });
-    const enrichResult = await d.invokeAgent({
-      prompt: enrichPrompt,
-      cwd: d.targetRepoRoot,
-      model: "sonnet",
+
+    // Sonnet's enrichment output is occasionally an unparseable YAML
+    // (truncated, mid-string, etc.). Retry once with a strict-YAML hint
+    // before failing the whole run.
+    const initialSpec = await invokeAndParseTaskSpec({
+      d,
+      basePrompt: enrichPrompt,
+      taskId: planTask.id,
+      attemptLabel: "initial enrichment",
+      yamlRetries: 1,
     });
-
-    if (!enrichResult.success) {
-      d.log.error(`Task enrichment agent failed for ${planTask.id}: ${enrichResult.stderr}`);
+    if (!initialSpec) {
       return { success: false };
     }
-
-    let taskYaml: string;
-    try {
-      taskYaml = extractYaml(enrichResult.stdout);
-    } catch (err) {
-      d.log.error(`Failed to extract YAML for task ${planTask.id}: ${String(err)}`);
-      return { success: false };
-    }
-
-    let taskSpec: TaskSpec;
-    try {
-      taskSpec = TaskSpecSchema.parse(parse(taskYaml));
-    } catch (err) {
-      d.log.error(`Task YAML validation failed for ${planTask.id}: ${String(err)}`);
-      d.log.error(`Extracted YAML:\n${taskYaml}`);
-      return { success: false };
-    }
+    let taskSpec: TaskSpec = initialSpec;
 
     // ─── Optional: enrichment critic with bounded retry loop ─────
     let unresolvedCritic: EvalResult | undefined;
@@ -342,30 +330,22 @@ export async function runPlan(
           assets: { "Critic Feedback": criticFeedback },
         });
 
-        const retryResult = await d.invokeAgent({
-          prompt: retryPrompt,
-          cwd: d.targetRepoRoot,
-          model: "sonnet",
+        const reEnriched = await invokeAndParseTaskSpec({
+          d,
+          basePrompt: retryPrompt,
+          taskId: planTask.id,
+          attemptLabel: `critic retry ${attempt + 1}`,
+          yamlRetries: 1,
         });
 
-        if (!retryResult.success) {
+        if (!reEnriched) {
           unresolvedCritic = criticResult;
-          d.log.warn(`Re-enrichment agent failed for ${planTask.id}, using last accepted spec`);
+          d.log.warn(`Re-enrichment failed for ${planTask.id}, using last accepted spec`);
           break;
         }
 
-        try {
-          const retryYaml = extractYaml(retryResult.stdout);
-          taskSpec = TaskSpecSchema.parse(parse(retryYaml));
-          d.log.info(`Re-enrichment succeeded for ${planTask.id}; re-running critic`);
-        } catch (err) {
-          unresolvedCritic = criticResult;
-          d.log.warn(
-            `Re-enrichment parse failed for ${planTask.id}, using last accepted spec: ${String(err)}`,
-          );
-          break;
-        }
-
+        taskSpec = reEnriched;
+        d.log.info(`Re-enrichment succeeded for ${planTask.id}; re-running critic`);
         attempt++;
       }
     }
@@ -384,6 +364,63 @@ export async function runPlan(
   }
 
   return { success: true, planPath };
+}
+
+/**
+ * Invoke the enrichment agent and try to extract+validate a TaskSpec from
+ * its output. Retries the agent call up to `yamlRetries` times on YAML
+ * extraction or schema validation failure, appending a strict-YAML hint
+ * to the prompt on each retry. Returns the parsed TaskSpec or null if
+ * all attempts fail (an error is logged in that case).
+ */
+async function invokeAndParseTaskSpec(opts: {
+  d: PlanDeps;
+  basePrompt: string;
+  taskId: string;
+  attemptLabel: string;
+  yamlRetries: number;
+}): Promise<TaskSpec | null> {
+  const { d, basePrompt, taskId, attemptLabel, yamlRetries } = opts;
+  let lastErr: string | undefined;
+
+  for (let attempt = 0; attempt <= yamlRetries; attempt++) {
+    const prompt =
+      attempt === 0 || !lastErr
+        ? basePrompt
+        : `${basePrompt}\n\n## CRITICAL: Previous output was not valid YAML\n` +
+          `Reason: ${lastErr}\n\n` +
+          `Output ONLY valid YAML conforming to the TaskSpec schema. ` +
+          `Do not include markdown fences, prose, or commentary before or after the YAML.`;
+
+    const result = await d.invokeAgent({
+      prompt,
+      cwd: d.targetRepoRoot,
+      model: "sonnet",
+    });
+
+    if (!result.success) {
+      lastErr = `agent error: ${result.stderr}`;
+      d.log.warn(
+        `Enrichment agent failed for ${taskId} (${attemptLabel}, try ${attempt + 1}/${yamlRetries + 1}): ${result.stderr}`,
+      );
+      continue;
+    }
+
+    try {
+      const yaml = extractYaml(result.stdout);
+      return TaskSpecSchema.parse(parse(yaml));
+    } catch (err) {
+      lastErr = String(err);
+      d.log.warn(
+        `YAML/schema parse failed for ${taskId} (${attemptLabel}, try ${attempt + 1}/${yamlRetries + 1}): ${lastErr}`,
+      );
+    }
+  }
+
+  d.log.error(
+    `All ${yamlRetries + 1} parse attempts exhausted for ${taskId} (${attemptLabel}). Last error: ${lastErr}`,
+  );
+  return null;
 }
 
 /**

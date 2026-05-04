@@ -182,7 +182,7 @@ describe("runPlan", () => {
       expect(deps.writeFile).toHaveBeenCalledTimes(2);
     });
 
-    it("fails if any task enrichment fails", async () => {
+    it("fails if any task enrichment fails after retries", async () => {
       let callCount = 0;
       const { logger, messages } = makeLogger();
       const deps = makeDeps({
@@ -199,7 +199,33 @@ describe("runPlan", () => {
       const result = await runPlan({ prompt: "test", stopAfter: "tasks" }, deps);
 
       expect(result.success).toBe(false);
-      expect(messages.error.some((m) => m.includes("enrichment agent failed"))).toBe(true);
+      // Final error is logged when all parse/agent retries are exhausted.
+      expect(messages.error.some((m) => m.includes("parse attempts exhausted"))).toBe(true);
+    });
+
+    it("retries enrichment when YAML parsing fails", async () => {
+      let callCount = 0;
+      const deps = makeDeps({
+        invokeAgent: vi.fn(async () => {
+          callCount++;
+          if (callCount === 1) {
+            // Phase 1 plan
+            return { success: true, stdout: stringify(samplePlan), stderr: "", parsed: null };
+          }
+          if (callCount === 2) {
+            // First task enrichment: garbage output → YAML extract should fail.
+            return { success: true, stdout: "this is not yaml", stderr: "", parsed: null };
+          }
+          // Subsequent calls return a valid task spec.
+          return { success: true, stdout: stringify(sampleTask), stderr: "", parsed: null };
+        }),
+      });
+
+      const result = await runPlan({ prompt: "test", stopAfter: "tasks" }, deps);
+
+      expect(result.success).toBe(true);
+      // 1 plan + 2 enrichments for task 1 (first failed parse, retry succeeded) + 1 for task 2
+      expect(deps.invokeAgent).toHaveBeenCalledTimes(4);
     });
   });
 
