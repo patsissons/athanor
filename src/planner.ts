@@ -60,7 +60,7 @@ export async function runPlan(
     planPath?: string;
     stopAfter?: "plan" | "tasks";
     targetRepoRoot?: string;
-    enrichmentCritic?: { enabled: boolean; model?: string };
+    enrichmentCritic?: { enabled: boolean; model?: string; maxRetries?: number };
   },
   deps: Partial<PlanDeps> = {},
 ): Promise<PlanResult> {
@@ -222,21 +222,40 @@ export async function runPlan(
       return { success: false };
     }
 
-    // ─── Optional: Single-pass enrichment critic ─────────────────
+    // ─── Optional: enrichment critic with bounded retry loop ─────
     if (opts.enrichmentCritic?.enabled) {
       const criticModel = opts.enrichmentCritic.model ?? "opus";
-      d.log.info(`Running enrichment critic on ${planTask.id} (${criticModel})`);
-      const criticResult = await d.critiqueTaskSpec({
-        taskSpec,
-        plan,
-        cwd: d.targetRepoRoot,
-        model: criticModel,
-        enrichedSiblings,
-      });
+      const maxRetries = opts.enrichmentCritic.maxRetries ?? 1;
+      let attempt = 0;
 
-      if (!criticResult.passed) {
+      while (true) {
+        d.log.info(
+          `Running enrichment critic on ${planTask.id} (${criticModel}, attempt ${attempt + 1}/${maxRetries + 1})`,
+        );
+        const criticResult = await d.critiqueTaskSpec({
+          taskSpec,
+          plan,
+          cwd: d.targetRepoRoot,
+          model: criticModel,
+          enrichedSiblings,
+        });
+
+        if (criticResult.passed) {
+          d.log.info(`Critic approved ${planTask.id}`);
+          break;
+        }
+
+        if (attempt >= maxRetries) {
+          d.log.warn(
+            `Critic still rejected ${planTask.id} after ${attempt} re-enrichment(s); using last spec. Last summary: ${criticResult.summary}`,
+          );
+          break;
+        }
+
         d.log.warn(`Critic rejected ${planTask.id}: ${criticResult.summary}`);
-        d.log.info(`Re-enriching ${planTask.id} with critic feedback`);
+        d.log.info(
+          `Re-enriching ${planTask.id} with critic feedback (retry ${attempt + 1}/${maxRetries})`,
+        );
 
         // Build a new enrichment prompt that includes the critic feedback
         const criticFeedback = [
@@ -263,21 +282,23 @@ export async function runPlan(
           model: "sonnet",
         });
 
-        if (retryResult.success) {
-          try {
-            const retryYaml = extractYaml(retryResult.stdout);
-            taskSpec = TaskSpecSchema.parse(parse(retryYaml));
-            d.log.info(`Re-enrichment succeeded for ${planTask.id}`);
-          } catch (err) {
-            d.log.warn(
-              `Re-enrichment parse failed for ${planTask.id}, using original spec: ${String(err)}`,
-            );
-          }
-        } else {
-          d.log.warn(`Re-enrichment agent failed for ${planTask.id}, using original spec`);
+        if (!retryResult.success) {
+          d.log.warn(`Re-enrichment agent failed for ${planTask.id}, using last accepted spec`);
+          break;
         }
-      } else {
-        d.log.info(`Critic approved ${planTask.id}`);
+
+        try {
+          const retryYaml = extractYaml(retryResult.stdout);
+          taskSpec = TaskSpecSchema.parse(parse(retryYaml));
+          d.log.info(`Re-enrichment succeeded for ${planTask.id}; re-running critic`);
+        } catch (err) {
+          d.log.warn(
+            `Re-enrichment parse failed for ${planTask.id}, using last accepted spec: ${String(err)}`,
+          );
+          break;
+        }
+
+        attempt++;
       }
     }
 

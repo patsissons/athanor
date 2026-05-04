@@ -296,6 +296,72 @@ describe("runPlan", () => {
       expect(deps.invokeAgent).toHaveBeenCalledTimes(4);
     });
 
+    it("re-runs the critic on the re-enriched spec", async () => {
+      let callCount = 0;
+      const critic = vi
+        .fn()
+        .mockResolvedValueOnce({
+          passed: false,
+          issues: [],
+          summary: "First-pass spec was bad.",
+        })
+        .mockResolvedValue({ passed: true, issues: [], summary: "OK." });
+
+      const deps = makeDeps({
+        invokeAgent: vi.fn(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return { success: true, stdout: stringify(samplePlan), stderr: "", parsed: null };
+          }
+          return { success: true, stdout: stringify(sampleTask), stderr: "", parsed: null };
+        }),
+        critiqueTaskSpec: critic,
+      });
+
+      const result = await runPlan(
+        { prompt: "test", stopAfter: "tasks", enrichmentCritic: { enabled: true } },
+        deps,
+      );
+
+      expect(result.success).toBe(true);
+      // 2 tasks: task1 → critic(reject) → re-enrich → critic(approve);
+      // task2 → critic(approve). Total critic calls = 3.
+      expect(critic).toHaveBeenCalledTimes(3);
+    });
+
+    it("gives up after maxRetries re-enrichments and keeps the last spec", async () => {
+      let callCount = 0;
+      const critic = vi.fn().mockResolvedValue({ passed: false, issues: [], summary: "still bad" });
+
+      const { logger, messages } = makeLogger();
+      const deps = makeDeps({
+        log: logger,
+        invokeAgent: vi.fn(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return { success: true, stdout: stringify(samplePlan), stderr: "", parsed: null };
+          }
+          return { success: true, stdout: stringify(sampleTask), stderr: "", parsed: null };
+        }),
+        critiqueTaskSpec: critic,
+      });
+
+      const result = await runPlan(
+        {
+          prompt: "test",
+          stopAfter: "tasks",
+          enrichmentCritic: { enabled: true, maxRetries: 1 },
+        },
+        deps,
+      );
+
+      expect(result.success).toBe(true);
+      // Per task: critic(reject) → re-enrich → critic(reject again, give up).
+      // Two tasks × 2 critic calls = 4.
+      expect(critic).toHaveBeenCalledTimes(4);
+      expect(messages.warn.some((m) => m.includes("still rejected"))).toBe(true);
+    });
+
     it("uses original spec when re-enrichment fails", async () => {
       let callCount = 0;
       const deps = makeDeps({
