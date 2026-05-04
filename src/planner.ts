@@ -1,7 +1,7 @@
 import { mkdir, writeFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parse, stringify } from "yaml";
-import { PlanSpecSchema, type PlanSpec } from "./plan-spec.js";
+import { PlanSpecSchema, loadPlanSpec, type PlanSpec } from "./plan-spec.js";
 import { TaskSpecSchema, type TaskSpec } from "./task-spec.js";
 import type { AppSpec } from "./app-spec.js";
 import type { EvalResult } from "./eval-spec.js";
@@ -24,6 +24,7 @@ export interface PlanDeps {
   }): Promise<EvalResult>;
   loadAppDefaults(targetRepoRoot: string): Promise<Partial<AppSpec>>;
   loadTaskDefaults(targetRepoRoot: string): Promise<Partial<TaskSpec>>;
+  loadPlanFile(path: string): Promise<PlanSpec>;
   writeFile(path: string, content: string): Promise<void>;
   mkdir(path: string): Promise<void>;
   readdir(path: string): Promise<string[]>;
@@ -38,6 +39,7 @@ const defaultDeps: PlanDeps = {
     critiqueTaskSpec({ ...opts, deps: { invokeAgent: invokeClaudeCode } }),
   loadAppDefaults,
   loadTaskDefaults,
+  loadPlanFile: loadPlanSpec,
   writeFile: (path, content) => writeFile(path, content, "utf8"),
   mkdir: (path) => mkdir(path, { recursive: true }).then(() => undefined),
   readdir: (path) => readdir(path),
@@ -54,6 +56,7 @@ export interface PlanResult {
 export async function runPlan(
   opts: {
     prompt?: string;
+    planPath?: string;
     stopAfter?: "plan" | "tasks";
     targetRepoRoot?: string;
     enrichmentCritic?: { enabled: boolean; model?: string };
@@ -66,56 +69,80 @@ export async function runPlan(
     ...deps,
   };
 
-  const appDefaults = await d.loadAppDefaults(d.targetRepoRoot);
-  const taskDefaults = await d.loadTaskDefaults(d.targetRepoRoot);
-
-  // ─── Phase 1: Plan Generation ──────────────────────────────────
-  if (!opts.prompt) {
+  if (opts.prompt && opts.planPath) {
+    d.log.error("Provide either a prompt or --from-plan, not both");
+    return { success: false };
+  }
+  if (!opts.prompt && !opts.planPath) {
     d.log.error("No prompt provided");
     return { success: false };
   }
 
-  d.log.info("Phase 1: Generating plan with Opus");
-  const prompt = buildPlanPrompt(opts.prompt, appDefaults, taskDefaults);
-  const result = await d.invokeAgent({
-    prompt,
-    cwd: d.targetRepoRoot,
-    model: "opus",
-  });
-
-  if (!result.success) {
-    d.log.error(`Plan agent invocation failed: ${result.stderr}`);
-    return { success: false };
-  }
-
-  let yamlText: string;
-  try {
-    yamlText = extractYaml(result.stdout);
-  } catch (err) {
-    d.log.error(`Failed to extract YAML from plan agent output: ${String(err)}`);
-    d.log.error(`Raw output (first 500 chars): ${result.stdout.slice(0, 500)}`);
-    return { success: false };
-  }
+  const appDefaults = await d.loadAppDefaults(d.targetRepoRoot);
+  const taskDefaults = await d.loadTaskDefaults(d.targetRepoRoot);
 
   let plan: PlanSpec;
-  try {
-    plan = PlanSpecSchema.parse(parse(yamlText));
-  } catch (err) {
-    d.log.error(`Plan YAML failed validation: ${String(err)}`);
-    d.log.error(`Extracted YAML:\n${yamlText}`);
-    return { success: false };
-  }
+  let planPath: string;
 
-  const plansDir = resolve(d.targetRepoRoot, ".athanor", "plans");
-  await d.mkdir(plansDir);
-  const planPath = resolve(plansDir, `${plan.id}.yaml`);
-  await d.writeFile(planPath, stringify(plan));
-  d.log.info(`Plan written to ${planPath}`);
-  d.log.info(`Plan "${plan.name ?? plan.id}" contains ${plan.tasks.length} task(s)`);
+  if (opts.planPath) {
+    // ─── Phase 1 (skipped): load existing plan ─────────────────────
+    d.log.info(`Loading plan from ${opts.planPath}`);
+    try {
+      plan = await d.loadPlanFile(opts.planPath);
+    } catch (err) {
+      d.log.error(`Failed to load plan from ${opts.planPath}: ${String(err)}`);
+      return { success: false };
+    }
+    planPath = opts.planPath;
+    d.log.info(`Plan "${plan.name ?? plan.id}" contains ${plan.tasks.length} task(s)`);
 
-  if (opts.stopAfter === "plan") {
-    d.log.info("Stopping after plan generation (--stop-after plan)");
-    return { success: true, planPath };
+    if (opts.stopAfter === "plan") {
+      d.log.info("Stopping after plan load (--stop-after plan)");
+      return { success: true, planPath };
+    }
+  } else {
+    // ─── Phase 1: Plan Generation ────────────────────────────────
+    d.log.info("Phase 1: Generating plan with Opus");
+    const prompt = buildPlanPrompt(opts.prompt!, appDefaults, taskDefaults);
+    const result = await d.invokeAgent({
+      prompt,
+      cwd: d.targetRepoRoot,
+      model: "opus",
+    });
+
+    if (!result.success) {
+      d.log.error(`Plan agent invocation failed: ${result.stderr}`);
+      return { success: false };
+    }
+
+    let yamlText: string;
+    try {
+      yamlText = extractYaml(result.stdout);
+    } catch (err) {
+      d.log.error(`Failed to extract YAML from plan agent output: ${String(err)}`);
+      d.log.error(`Raw output (first 500 chars): ${result.stdout.slice(0, 500)}`);
+      return { success: false };
+    }
+
+    try {
+      plan = PlanSpecSchema.parse(parse(yamlText));
+    } catch (err) {
+      d.log.error(`Plan YAML failed validation: ${String(err)}`);
+      d.log.error(`Extracted YAML:\n${yamlText}`);
+      return { success: false };
+    }
+
+    const plansDir = resolve(d.targetRepoRoot, ".athanor", "plans");
+    await d.mkdir(plansDir);
+    planPath = resolve(plansDir, `${plan.id}.yaml`);
+    await d.writeFile(planPath, stringify(plan));
+    d.log.info(`Plan written to ${planPath}`);
+    d.log.info(`Plan "${plan.name ?? plan.id}" contains ${plan.tasks.length} task(s)`);
+
+    if (opts.stopAfter === "plan") {
+      d.log.info("Stopping after plan generation (--stop-after plan)");
+      return { success: true, planPath };
+    }
   }
 
   // ─── Phase 2: Task Generation ──────────────────────────────────

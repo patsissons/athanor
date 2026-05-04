@@ -8,3 +8,11 @@ runs/
 # env
 .env
 .env.local
+
+# athanor
+.athanor/plans
+.athanor/tasks/*
+!.athanor/tasks/example*
+
+# claude
+.claude/scheduled_tasks.lock

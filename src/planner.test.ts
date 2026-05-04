@@ -46,6 +46,7 @@ function makeDeps(overrides: Partial<PlanDeps> = {}): PlanDeps {
     critiqueTaskSpec: vi.fn(async () => ({ passed: true, issues: [], summary: "Approved." })),
     loadAppDefaults: vi.fn(async () => ({})),
     loadTaskDefaults: vi.fn(async () => ({})),
+    loadPlanFile: vi.fn(async () => samplePlan),
     writeFile: vi.fn(async () => {}),
     mkdir: vi.fn(async () => {}),
     readdir: vi.fn(async () => []),
@@ -328,6 +329,62 @@ describe("runPlan", () => {
 
       expect(result.success).toBe(true);
       expect(deps.writeFile).toHaveBeenCalled();
+    });
+  });
+
+  describe("--from-plan (skip Phase 1)", () => {
+    it("loads an existing plan and skips Phase 1 plan generation", async () => {
+      const deps = makeDeps({
+        invokeAgent: vi.fn(agentReturning(stringify(sampleTask))),
+      });
+
+      const result = await runPlan(
+        { planPath: "/repo/.athanor/plans/add-favorites.yaml", stopAfter: "tasks" },
+        deps,
+      );
+
+      expect(result.success).toBe(true);
+      expect(deps.loadPlanFile).toHaveBeenCalledWith("/repo/.athanor/plans/add-favorites.yaml");
+      // Only task enrichment calls; plan generation is skipped.
+      expect(deps.invokeAgent).toHaveBeenCalledTimes(2);
+      // No plan file is written when loading from disk; only the 2 task files.
+      expect(deps.writeFile).toHaveBeenCalledTimes(2);
+      expect(result.planPath).toBe("/repo/.athanor/plans/add-favorites.yaml");
+    });
+
+    it("returns the supplied planPath when stopping after plan load", async () => {
+      const deps = makeDeps();
+      const result = await runPlan({ planPath: "/repo/plans/x.yaml", stopAfter: "plan" }, deps);
+
+      expect(result.success).toBe(true);
+      expect(result.planPath).toBe("/repo/plans/x.yaml");
+      expect(deps.invokeAgent).not.toHaveBeenCalled();
+    });
+
+    it("rejects when both prompt and planPath are supplied", async () => {
+      const { logger, messages } = makeLogger();
+      const deps = makeDeps({ log: logger });
+      const result = await runPlan(
+        { prompt: "test", planPath: "/x.yaml", stopAfter: "plan" },
+        deps,
+      );
+
+      expect(result.success).toBe(false);
+      expect(messages.error.some((m) => m.includes("not both"))).toBe(true);
+    });
+
+    it("fails cleanly when the plan file cannot be loaded", async () => {
+      const { logger, messages } = makeLogger();
+      const deps = makeDeps({
+        log: logger,
+        loadPlanFile: vi.fn(async () => {
+          throw new Error("ENOENT");
+        }),
+      });
+      const result = await runPlan({ planPath: "/missing.yaml" }, deps);
+
+      expect(result.success).toBe(false);
+      expect(messages.error.some((m) => m.includes("Failed to load plan"))).toBe(true);
     });
   });
 });

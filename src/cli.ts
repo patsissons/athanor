@@ -52,20 +52,35 @@ program
 program
   .command("plan")
   .description("Generate a plan and enrich task specs")
-  .argument("<prompt>", "The planning prompt")
+  .argument("[prompt]", "The planning prompt (omit when using --from-plan)")
+  .option("--from-plan <path>", "Skip plan generation; enrich an existing plan YAML")
   .option("--stop-after <phase>", "Stop after phase (plan or tasks)")
   .option("--enrichment-critic", "Enable enrichment critic for task specs")
   .option("--run-plan", "Automatically execute the plan after generation")
   .action(
     async (
-      prompt: string,
-      opts: { stopAfter?: string; enrichmentCritic?: boolean; runPlan?: boolean },
+      prompt: string | undefined,
+      opts: {
+        fromPlan?: string;
+        stopAfter?: string;
+        enrichmentCritic?: boolean;
+        runPlan?: boolean;
+      },
       cmd: Command,
     ) => {
       if (cmd.optsWithGlobals().debug) enableDebug();
 
       if (opts.stopAfter && opts.stopAfter !== "plan" && opts.stopAfter !== "tasks") {
         console.error("--stop-after must be 'plan' or 'tasks'");
+        process.exit(1);
+      }
+
+      if (prompt && opts.fromPlan) {
+        console.error("Provide either a prompt or --from-plan, not both");
+        process.exit(1);
+      }
+      if (!prompt && !opts.fromPlan) {
+        console.error("Provide a prompt or --from-plan <path>");
         process.exit(1);
       }
 
@@ -84,6 +99,7 @@ program
 
       const result = await runPlan({
         prompt,
+        planPath: opts.fromPlan ? resolve(targetRepoRoot, opts.fromPlan) : undefined,
         stopAfter: opts.stopAfter as "plan" | "tasks" | undefined,
         targetRepoRoot,
         enrichmentCritic: opts.enrichmentCritic ? { enabled: true } : undefined,
