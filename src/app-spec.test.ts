@@ -74,4 +74,42 @@ describe("AppSpecSchema", () => {
     const result = AppSpecSchema.parse({ id: "my-app", title: "My App" });
     expect(result.devServer).toBeUndefined();
   });
+
+  it("accepts an isolation config (worktree)", () => {
+    const result = AppSpecSchema.parse({
+      id: "my-app",
+      title: "My App",
+      isolation: { backend: "worktree" },
+    });
+    expect(result.isolation).toEqual({ backend: "worktree" });
+  });
+
+  it("accepts an isolation config (sandcastle with all fields)", () => {
+    const result = AppSpecSchema.parse({
+      id: "my-app",
+      title: "My App",
+      isolation: {
+        backend: "sandcastle",
+        provider: "docker",
+        image: "node:20",
+        copyToWorktree: ["src"],
+      },
+    });
+    expect(result.isolation?.backend).toBe("sandcastle");
+  });
+
+  it("rejects an unknown isolation backend", () => {
+    expect(() =>
+      AppSpecSchema.parse({
+        id: "my-app",
+        title: "My App",
+        isolation: { backend: "vm" },
+      }),
+    ).toThrow();
+  });
+
+  it("treats isolation as optional", () => {
+    const result = AppSpecSchema.parse({ id: "my-app", title: "My App" });
+    expect(result.isolation).toBeUndefined();
+  });
 });

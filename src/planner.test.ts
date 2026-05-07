@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
-import { runPlan, type PlanDeps } from "./planner.js";
+import { runPlan, renderUnresolvedCriticHeader, type PlanDeps } from "./planner.js";
 import type { PlanSpec } from "./plan-spec.js";
 import type { TaskSpec } from "./task-spec.js";
 import { TaskSpecSchema } from "./task-spec.js";
@@ -46,6 +46,7 @@ function makeDeps(overrides: Partial<PlanDeps> = {}): PlanDeps {
     critiqueTaskSpec: vi.fn(async () => ({ passed: true, issues: [], summary: "Approved." })),
     loadAppDefaults: vi.fn(async () => ({})),
     loadTaskDefaults: vi.fn(async () => ({})),
+    loadPlanFile: vi.fn(async () => samplePlan),
     writeFile: vi.fn(async () => {}),
     mkdir: vi.fn(async () => {}),
     readdir: vi.fn(async () => []),
@@ -159,6 +160,24 @@ describe("runPlan", () => {
       await runPlan({ prompt: "test", stopAfter: "tasks" }, deps);
     });
 
+    it("uses an overridden enrichment model when supplied", async () => {
+      let callCount = 0;
+      const deps = makeDeps({
+        invokeAgent: vi.fn(async (opts) => {
+          callCount++;
+          if (callCount === 1) {
+            // Phase 1 plan generation always uses opus regardless.
+            return { success: true, stdout: stringify(samplePlan), stderr: "", parsed: null };
+          }
+          // Every Phase 2 enrichment call should use the override.
+          expect(opts.model).toBe("opus");
+          return { success: true, stdout: stringify(sampleTask), stderr: "", parsed: null };
+        }),
+      });
+
+      await runPlan({ prompt: "test", stopAfter: "tasks", enrichmentModel: "opus" }, deps);
+    });
+
     it("skips tasks that already have YAML files", async () => {
       let callCount = 0;
       const deps = makeDeps({
@@ -181,7 +200,7 @@ describe("runPlan", () => {
       expect(deps.writeFile).toHaveBeenCalledTimes(2);
     });
 
-    it("fails if any task enrichment fails", async () => {
+    it("fails if any task enrichment fails after retries", async () => {
       let callCount = 0;
       const { logger, messages } = makeLogger();
       const deps = makeDeps({
@@ -198,7 +217,33 @@ describe("runPlan", () => {
       const result = await runPlan({ prompt: "test", stopAfter: "tasks" }, deps);
 
       expect(result.success).toBe(false);
-      expect(messages.error.some((m) => m.includes("enrichment agent failed"))).toBe(true);
+      // Final error is logged when all parse/agent retries are exhausted.
+      expect(messages.error.some((m) => m.includes("parse attempts exhausted"))).toBe(true);
+    });
+
+    it("retries enrichment when YAML parsing fails", async () => {
+      let callCount = 0;
+      const deps = makeDeps({
+        invokeAgent: vi.fn(async () => {
+          callCount++;
+          if (callCount === 1) {
+            // Phase 1 plan
+            return { success: true, stdout: stringify(samplePlan), stderr: "", parsed: null };
+          }
+          if (callCount === 2) {
+            // First task enrichment: garbage output → YAML extract should fail.
+            return { success: true, stdout: "this is not yaml", stderr: "", parsed: null };
+          }
+          // Subsequent calls return a valid task spec.
+          return { success: true, stdout: stringify(sampleTask), stderr: "", parsed: null };
+        }),
+      });
+
+      const result = await runPlan({ prompt: "test", stopAfter: "tasks" }, deps);
+
+      expect(result.success).toBe(true);
+      // 1 plan + 2 enrichments for task 1 (first failed parse, retry succeeded) + 1 for task 2
+      expect(deps.invokeAgent).toHaveBeenCalledTimes(4);
     });
   });
 
@@ -295,6 +340,72 @@ describe("runPlan", () => {
       expect(deps.invokeAgent).toHaveBeenCalledTimes(4);
     });
 
+    it("re-runs the critic on the re-enriched spec", async () => {
+      let callCount = 0;
+      const critic = vi
+        .fn()
+        .mockResolvedValueOnce({
+          passed: false,
+          issues: [],
+          summary: "First-pass spec was bad.",
+        })
+        .mockResolvedValue({ passed: true, issues: [], summary: "OK." });
+
+      const deps = makeDeps({
+        invokeAgent: vi.fn(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return { success: true, stdout: stringify(samplePlan), stderr: "", parsed: null };
+          }
+          return { success: true, stdout: stringify(sampleTask), stderr: "", parsed: null };
+        }),
+        critiqueTaskSpec: critic,
+      });
+
+      const result = await runPlan(
+        { prompt: "test", stopAfter: "tasks", enrichmentCritic: { enabled: true } },
+        deps,
+      );
+
+      expect(result.success).toBe(true);
+      // 2 tasks: task1 → critic(reject) → re-enrich → critic(approve);
+      // task2 → critic(approve). Total critic calls = 3.
+      expect(critic).toHaveBeenCalledTimes(3);
+    });
+
+    it("gives up after maxRetries re-enrichments and keeps the last spec", async () => {
+      let callCount = 0;
+      const critic = vi.fn().mockResolvedValue({ passed: false, issues: [], summary: "still bad" });
+
+      const { logger, messages } = makeLogger();
+      const deps = makeDeps({
+        log: logger,
+        invokeAgent: vi.fn(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return { success: true, stdout: stringify(samplePlan), stderr: "", parsed: null };
+          }
+          return { success: true, stdout: stringify(sampleTask), stderr: "", parsed: null };
+        }),
+        critiqueTaskSpec: critic,
+      });
+
+      const result = await runPlan(
+        {
+          prompt: "test",
+          stopAfter: "tasks",
+          enrichmentCritic: { enabled: true, maxRetries: 1 },
+        },
+        deps,
+      );
+
+      expect(result.success).toBe(true);
+      // Per task: critic(reject) → re-enrich → critic(reject again, give up).
+      // Two tasks × 2 critic calls = 4.
+      expect(critic).toHaveBeenCalledTimes(4);
+      expect(messages.warn.some((m) => m.includes("still rejected"))).toBe(true);
+    });
+
     it("uses original spec when re-enrichment fails", async () => {
       let callCount = 0;
       const deps = makeDeps({
@@ -328,6 +439,142 @@ describe("runPlan", () => {
 
       expect(result.success).toBe(true);
       expect(deps.writeFile).toHaveBeenCalled();
+    });
+  });
+
+  describe("--from-plan (skip Phase 1)", () => {
+    it("loads an existing plan and skips Phase 1 plan generation", async () => {
+      const deps = makeDeps({
+        invokeAgent: vi.fn(agentReturning(stringify(sampleTask))),
+      });
+
+      const result = await runPlan(
+        { planPath: "/repo/.athanor/plans/add-favorites.yaml", stopAfter: "tasks" },
+        deps,
+      );
+
+      expect(result.success).toBe(true);
+      expect(deps.loadPlanFile).toHaveBeenCalledWith("/repo/.athanor/plans/add-favorites.yaml");
+      // Only task enrichment calls; plan generation is skipped.
+      expect(deps.invokeAgent).toHaveBeenCalledTimes(2);
+      // No plan file is written when loading from disk; only the 2 task files.
+      expect(deps.writeFile).toHaveBeenCalledTimes(2);
+      expect(result.planPath).toBe("/repo/.athanor/plans/add-favorites.yaml");
+    });
+
+    it("returns the supplied planPath when stopping after plan load", async () => {
+      const deps = makeDeps();
+      const result = await runPlan({ planPath: "/repo/plans/x.yaml", stopAfter: "plan" }, deps);
+
+      expect(result.success).toBe(true);
+      expect(result.planPath).toBe("/repo/plans/x.yaml");
+      expect(deps.invokeAgent).not.toHaveBeenCalled();
+    });
+
+    it("rejects when both prompt and planPath are supplied", async () => {
+      const { logger, messages } = makeLogger();
+      const deps = makeDeps({ log: logger });
+      const result = await runPlan(
+        { prompt: "test", planPath: "/x.yaml", stopAfter: "plan" },
+        deps,
+      );
+
+      expect(result.success).toBe(false);
+      expect(messages.error.some((m) => m.includes("not both"))).toBe(true);
+    });
+
+    it("fails cleanly when the plan file cannot be loaded", async () => {
+      const { logger, messages } = makeLogger();
+      const deps = makeDeps({
+        log: logger,
+        loadPlanFile: vi.fn(async () => {
+          throw new Error("ENOENT");
+        }),
+      });
+      const result = await runPlan({ planPath: "/missing.yaml" }, deps);
+
+      expect(result.success).toBe(false);
+      expect(messages.error.some((m) => m.includes("Failed to load plan"))).toBe(true);
+    });
+  });
+
+  describe("unresolved critic header", () => {
+    it("prepends a critic comment block when retries are exhausted", async () => {
+      let callCount = 0;
+      const critic = vi.fn().mockResolvedValue({
+        passed: false,
+        issues: [
+          {
+            severity: "critical",
+            criterion: "Cross-task consistency",
+            description: "Path src/foo disagrees with sibling src/bar",
+            suggestion: "Use src/bar",
+          },
+        ],
+        summary: "Still bad after retry.",
+      });
+
+      let lastWrite: { path: string; content: string } | undefined;
+      const deps = makeDeps({
+        invokeAgent: vi.fn(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return { success: true, stdout: stringify(samplePlan), stderr: "", parsed: null };
+          }
+          return { success: true, stdout: stringify(sampleTask), stderr: "", parsed: null };
+        }),
+        critiqueTaskSpec: critic,
+        writeFile: vi.fn(async (path, content) => {
+          // Capture the LAST task write; plan write happens first.
+          if (path.endsWith("add-favorites-button.yaml")) {
+            lastWrite = { path, content };
+          }
+        }),
+      });
+
+      await runPlan(
+        {
+          prompt: "test",
+          stopAfter: "tasks",
+          enrichmentCritic: { enabled: true, maxRetries: 1 },
+        },
+        deps,
+      );
+
+      expect(lastWrite).toBeDefined();
+      expect(lastWrite!.content).toMatch(/^# ── CRITIC OVERRIDDEN/);
+      expect(lastWrite!.content).toContain("Still bad after retry.");
+      expect(lastWrite!.content).toContain("[critical] Cross-task consistency");
+      expect(lastWrite!.content).toContain("Path src/foo disagrees");
+      expect(lastWrite!.content).toContain("suggestion: Use src/bar");
+      // The spec body must still parse — i.e. comments are followed by valid YAML.
+      const yamlOnly = lastWrite!.content
+        .split("\n")
+        .filter((l) => !l.startsWith("#"))
+        .join("\n");
+      expect(yamlOnly).toContain("id: add-favorites-page");
+    });
+
+    it("renderUnresolvedCriticHeader handles missing fields gracefully", () => {
+      const header = renderUnresolvedCriticHeader({
+        passed: false,
+        issues: [],
+        summary: "Just a summary, no issues.",
+      });
+      expect(header).toContain("CRITIC OVERRIDDEN");
+      expect(header).toContain("Just a summary, no issues.");
+      expect(header).not.toContain("Unresolved issues");
+    });
+  });
+
+  describe("--re-critic (audit mode)", () => {
+    it("rejects when --re-critic is supplied without --from-plan", async () => {
+      const { logger, messages } = makeLogger();
+      const deps = makeDeps({ log: logger });
+      const result = await runPlan({ prompt: "x", reCritic: true }, deps);
+
+      expect(result.success).toBe(false);
+      expect(messages.error.some((m) => m.includes("--re-critic requires --from-plan"))).toBe(true);
     });
   });
 });

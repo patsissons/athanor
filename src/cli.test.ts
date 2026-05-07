@@ -68,6 +68,59 @@ describe("athanor CLI", () => {
         await rm(tmp, { recursive: true, force: true });
       }
     });
+
+    it("rejects `plan` when both a prompt and --from-plan are supplied", async () => {
+      const tmp = await mkdtemp(resolve(tmpdir(), "athanor-cli-fromplan-both-"));
+      try {
+        await execa("git", ["init"], { cwd: tmp });
+        const result = await runCli(["plan", "Add a thing", "--from-plan", "plans/x.yaml"], {
+          cwd: tmp,
+        });
+        expect(result.exitCode).toBe(1);
+        expect(result.stderr).toMatch(/not both/);
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("rejects `plan` when neither a prompt nor --from-plan is supplied", async () => {
+      const tmp = await mkdtemp(resolve(tmpdir(), "athanor-cli-fromplan-neither-"));
+      try {
+        await execa("git", ["init"], { cwd: tmp });
+        const result = await runCli(["plan"], { cwd: tmp });
+        expect(result.exitCode).toBe(1);
+        expect(result.stderr).toMatch(/prompt or --from-plan/);
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("rejects `plan --re-critic` when --from-plan is not supplied", async () => {
+      const tmp = await mkdtemp(resolve(tmpdir(), "athanor-cli-recritic-noplan-"));
+      try {
+        await execa("git", ["init"], { cwd: tmp });
+        const result = await runCli(["plan", "Add a thing", "--re-critic"], { cwd: tmp });
+        expect(result.exitCode).toBe(1);
+        expect(result.stderr).toMatch(/--re-critic requires --from-plan/);
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("rejects `plan --critic-max-retries` with a negative value", async () => {
+      const tmp = await mkdtemp(resolve(tmpdir(), "athanor-cli-maxretries-neg-"));
+      try {
+        await execa("git", ["init"], { cwd: tmp });
+        const result = await runCli(
+          ["plan", "Add a thing", "--enrichment-critic", "--critic-max-retries", "-1"],
+          { cwd: tmp },
+        );
+        expect(result.exitCode).toBe(1);
+        expect(result.stderr).toMatch(/non-negative integer/);
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("not-a-git-repo guardrail", () => {

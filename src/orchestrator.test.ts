@@ -7,6 +7,7 @@ import {
   type WorktreeLike,
 } from "./orchestrator.js";
 import { TaskSpecSchema, type TaskSpec } from "./task-spec.js";
+import type { IsolationBackend } from "./isolation/index.js";
 
 function makeTask(overrides: Partial<TaskSpec> = {}): TaskSpec {
   return TaskSpecSchema.parse({
@@ -86,14 +87,45 @@ function makeRuntime(opts: {
         throw opts.pushError;
       }
     }),
+    destroy: vi.fn().mockResolvedValue(undefined),
+  };
+
+  // The IsolationBackend mock is constructed once and injected via the
+  // createIsolation factory. It delegates worktree-passthrough methods
+  // to the worktree mock above so existing assertions on
+  // worktree.commitAll / worktree.push keep working.
+  const isolation: IsolationBackend = {
+    get branch() {
+      return worktree.branch;
+    },
+    get path() {
+      return worktree.path;
+    },
+    create: () => worktree.create(),
+    changedFiles: () => worktree.changedFiles(),
+    diff: () => worktree.diff(),
+    commitAll: (msg: string) => worktree.commitAll(msg),
+    push: () => worktree.push(),
+    destroy: vi.fn().mockResolvedValue(undefined),
+    runAgent: vi.fn().mockImplementation(async () => {
+      const r = agentResults.shift() ?? { success: true, stderr: "" };
+      return { success: r.success, stdout: "", stderr: r.stderr, parsed: null, summary: r.summary };
+    }),
+    runCommand: vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
+      // npm install warm-up uses the install path; gate sh -c invocations
+      // come through the gateRunner adapter and route through this same
+      // mock. The test only cares about the install result.
+      if (args[0] === "install") {
+        const r = installResults.shift() ?? { exitCode: 0, stderr: "" };
+        return { exitCode: r.exitCode, stdout: "", stderr: r.stderr };
+      }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    }),
   };
 
   const deps: RunTaskDeps = {
-    createWorktree: vi.fn(() => worktree),
+    createIsolationBackend: vi.fn(async () => isolation),
     makeRunId: vi.fn(() => "20260423-120000-abcd"),
-    invokeAgent: vi
-      .fn()
-      .mockImplementation(async () => agentResults.shift() ?? { success: true, stderr: "" }),
     runAllGates: vi
       .fn()
       .mockImplementation(
@@ -105,16 +137,10 @@ function makeRuntime(opts: {
       .mockImplementation(
         async () => evalResults.shift() ?? { passed: true, issues: [], summary: "Approved." },
       ),
-    runCommand: vi.fn().mockImplementation(async (_command, args) => {
-      if (args[0] === "install") {
-        return installResults.shift() ?? { exitCode: 0, stderr: "" };
-      }
-      return { exitCode: 0, stderr: "" };
-    }),
     log: logger,
   };
 
-  return { worktree, deps, messages };
+  return { worktree, isolation, deps, messages };
 }
 
 const taskOpts = { targetRepoRoot: "/repo", harnessRoot: "/harness" };
@@ -129,7 +155,7 @@ describe("runTask", () => {
 
     expect(result.success).toBe(false);
     expect(runtime.messages.error).toContain("npm install failed:\nboom");
-    expect(runtime.deps.invokeAgent).not.toHaveBeenCalled();
+    expect(runtime.isolation.runAgent).not.toHaveBeenCalled();
   });
 
   it("commits and pushes on success", async () => {
@@ -184,17 +210,20 @@ describe("runTask", () => {
     });
   });
 
-  it("forwards baseBranch to createWorktree", async () => {
+  it("forwards baseBranch to createIsolationBackend", async () => {
     const runtime = makeRuntime({});
 
     await runTask(makeTask(), { ...taskOpts, baseBranch: "athanor/prev/run" }, runtime.deps);
 
-    expect(runtime.deps.createWorktree).toHaveBeenCalledWith(
-      "/repo",
-      "/harness",
-      "demo",
-      "20260423-120000-abcd",
-      "athanor/prev/run",
+    expect(runtime.deps.createIsolationBackend).toHaveBeenCalledWith(
+      { backend: "worktree" },
+      {
+        targetRepoRoot: "/repo",
+        harnessRoot: "/harness",
+        identifier: "demo",
+        runId: "20260423-120000-abcd",
+        baseBranch: "athanor/prev/run",
+      },
     );
   });
 
@@ -203,13 +232,53 @@ describe("runTask", () => {
 
     await runTask(makeTask(), taskOpts, runtime.deps);
 
-    expect(runtime.deps.createWorktree).toHaveBeenCalledWith(
-      "/repo",
-      "/harness",
-      "demo",
-      "20260423-120000-abcd",
-      undefined,
+    expect(runtime.deps.createIsolationBackend).toHaveBeenCalledWith(
+      { backend: "worktree" },
+      {
+        targetRepoRoot: "/repo",
+        harnessRoot: "/harness",
+        identifier: "demo",
+        runId: "20260423-120000-abcd",
+        baseBranch: undefined,
+      },
     );
+  });
+
+  it("resolves an explicit task.isolation override and passes it to createIsolationBackend", async () => {
+    const runtime = makeRuntime({});
+
+    const task = makeTask({
+      isolation: { backend: "sandcastle", provider: "docker" },
+    });
+
+    await runTask(task, taskOpts, runtime.deps);
+
+    expect(runtime.deps.createIsolationBackend).toHaveBeenCalledWith(
+      { backend: "sandcastle", provider: "docker" },
+      expect.objectContaining({
+        targetRepoRoot: "/repo",
+        harnessRoot: "/harness",
+        identifier: "demo",
+      }),
+    );
+  });
+
+  it("calls isolation.destroy in finally on success", async () => {
+    const runtime = makeRuntime({});
+
+    await runTask(makeTask(), taskOpts, runtime.deps);
+
+    expect(runtime.isolation.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls isolation.destroy in finally even when the task fails", async () => {
+    const runtime = makeRuntime({
+      installResults: [{ exitCode: 1, stderr: "boom" }],
+    });
+
+    await runTask(makeTask(), taskOpts, runtime.deps);
+
+    expect(runtime.isolation.destroy).toHaveBeenCalledTimes(1);
   });
 
   it("skips push when push option is false", async () => {
@@ -256,7 +325,7 @@ describe("runTask", () => {
     const result = await runTask(task, taskOpts, runtime.deps);
 
     expect(result.success).toBe(true);
-    expect(runtime.deps.invokeAgent).toHaveBeenCalledTimes(3);
+    expect(runtime.isolation.runAgent).toHaveBeenCalledTimes(3);
   });
 
   it("does not override maxAgentAttempts when explicitly set", async () => {
@@ -273,6 +342,6 @@ describe("runTask", () => {
     const result = await runTask(task, taskOpts, runtime.deps);
 
     expect(result.success).toBe(false);
-    expect(runtime.deps.invokeAgent).toHaveBeenCalledTimes(1);
+    expect(runtime.isolation.runAgent).toHaveBeenCalledTimes(1);
   });
 });

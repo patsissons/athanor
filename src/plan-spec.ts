@@ -3,6 +3,7 @@ import { parse } from "yaml";
 import { z } from "zod";
 import { ValidationGateSchema } from "./task-spec.js";
 import { EvaluatorConfigBaseSchema } from "./eval-spec.js";
+import { IsolationConfigSchema } from "./isolation/index.js";
 
 export const PlanTaskOverridesSchema = z.object({
   allowedPaths: z.array(z.string()).optional(),
@@ -13,6 +14,7 @@ export const PlanTaskOverridesSchema = z.object({
   maxAgentAttempts: z.number().int().min(1).max(3).optional(),
   model: z.enum(["sonnet", "opus", "haiku"]).optional(),
   evaluator: EvaluatorConfigBaseSchema.partial().optional(),
+  isolation: IsolationConfigSchema.optional(),
 });
 
 export const PlanTaskSchema = z.object({
@@ -25,6 +27,7 @@ export const PlanSpecSchema = z.object({
   id: z.string().min(1),
   name: z.string().optional(),
   description: z.string().optional(),
+  isolation: IsolationConfigSchema.optional(),
   tasks: z
     .array(PlanTaskSchema)
     .min(1)

@@ -6,6 +6,65 @@ import { execa } from "execa";
 import { describe, expect, it } from "vitest";
 import { runTask } from "./orchestrator.js";
 import { TaskSpecSchema } from "./task-spec.js";
+import { Worktree } from "./worktree.js";
+import type { IsolationBackend, IsolationBackendArgs } from "./isolation/index.js";
+
+/**
+ * Build an IsolationBackend that wraps a real Worktree (so git ops
+ * exercise the actual filesystem) but routes runAgent / runCommand
+ * through test-supplied stubs. Mirrors the pre-rewire pattern of
+ * passing fake invokeAgent / runCommand deps to runTask.
+ */
+function makeFakeBackendFactory(stubs: {
+  runAgent: (cwd: string) => Promise<{ success: boolean; stderr: string; summary?: string }>;
+  runCommand?: (cmd: string, args: string[]) => Promise<{ exitCode: number | null }>;
+}) {
+  return async (
+    _cfg: { backend: "worktree" | "sandcastle" },
+    args: IsolationBackendArgs,
+  ): Promise<IsolationBackend> => {
+    const wt = new Worktree(
+      args.targetRepoRoot,
+      args.harnessRoot,
+      args.identifier,
+      args.runId,
+      args.baseBranch,
+    );
+    return {
+      get branch() {
+        return wt.branch;
+      },
+      get path() {
+        return wt.path;
+      },
+      create: () => wt.create(),
+      changedFiles: () => wt.changedFiles(),
+      diff: () => wt.diff(),
+      commitAll: (msg) => wt.commitAll(msg),
+      push: () => wt.push(),
+      destroy: async () => {
+        // no-op for parity with WorktreeBackend
+      },
+      runAgent: async () => {
+        const r = await stubs.runAgent(wt.path);
+        return {
+          success: r.success,
+          stdout: "",
+          stderr: r.stderr,
+          parsed: null,
+          summary: r.summary,
+        };
+      },
+      runCommand: async (cmd, cmdArgs) => {
+        if (stubs.runCommand) {
+          const r = await stubs.runCommand(cmd, cmdArgs);
+          return { exitCode: r.exitCode, stdout: "", stderr: "" };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    };
+  };
+}
 
 async function git(cwd: string, args: string[]): Promise<string> {
   const result = await execa("git", args, { cwd });
@@ -123,12 +182,13 @@ describe.concurrent("runTask e2e", () => {
         task,
         { targetRepoRoot: repoRoot, harnessRoot },
         {
-          invokeAgent: async ({ cwd }) => {
-            await writeFile(join(cwd, "package.json"), '{ "name": "mutated" }\n');
-            return { success: true, stderr: "" };
-          },
+          createIsolationBackend: makeFakeBackendFactory({
+            runAgent: async (cwd) => {
+              await writeFile(join(cwd, "package.json"), '{ "name": "mutated" }\n');
+              return { success: true, stderr: "" };
+            },
+          }),
           runAllGates: async () => [{ name: "typecheck", passed: true, exitCode: 0, output: "" }],
-          runCommand: async () => ({ exitCode: 0, stderr: "" }),
           log: {
             info: () => {},
             warn: (message) => warnings.push(message),
@@ -139,7 +199,7 @@ describe.concurrent("runTask e2e", () => {
         },
       );
 
-      expect(ok).toBe(false);
+      expect(ok.success).toBe(false);
       expect(warnings.some((message) => message.includes("Agent modified forbidden files"))).toBe(
         true,
       );
@@ -174,12 +234,13 @@ describe.concurrent("runTask e2e", () => {
         task,
         { targetRepoRoot: repoRoot, harnessRoot },
         {
-          invokeAgent: async ({ cwd }) => {
-            await writeFile(join(cwd, "src.ts"), "export const ready = false;\n");
-            return { success: true, stderr: "" };
-          },
+          createIsolationBackend: makeFakeBackendFactory({
+            runAgent: async (cwd) => {
+              await writeFile(join(cwd, "src.ts"), "export const ready = false;\n");
+              return { success: true, stderr: "" };
+            },
+          }),
           runAllGates: async () => [{ name: "typecheck", passed: true, exitCode: 0, output: "" }],
-          runCommand: async () => ({ exitCode: 0, stderr: "" }),
           log: {
             info: () => {},
             warn: (message) => warnings.push(message),
@@ -190,7 +251,7 @@ describe.concurrent("runTask e2e", () => {
         },
       );
 
-      expect(ok).toBe(true);
+      expect(ok.success).toBe(true);
       expect(await branchExists(repoRoot, branch)).toBe(true);
       expect(await commitsAheadOfMain(repoRoot, branch)).toBe(1);
       expect(await git(worktreePath, ["status", "--short"])).toBe("");
@@ -223,12 +284,13 @@ describe.concurrent("runTask e2e", () => {
         task,
         { targetRepoRoot: repoRoot, harnessRoot },
         {
-          invokeAgent: async ({ cwd }) => {
-            await writeFile(join(cwd, "extra.ts"), "export const outside = true;\n");
-            return { success: true, stderr: "" };
-          },
+          createIsolationBackend: makeFakeBackendFactory({
+            runAgent: async (cwd) => {
+              await writeFile(join(cwd, "extra.ts"), "export const outside = true;\n");
+              return { success: true, stderr: "" };
+            },
+          }),
           runAllGates: async () => [{ name: "typecheck", passed: true, exitCode: 0, output: "" }],
-          runCommand: async () => ({ exitCode: 0, stderr: "" }),
           log: {
             info: () => {},
             warn: (message) => warnings.push(message),
@@ -239,7 +301,7 @@ describe.concurrent("runTask e2e", () => {
         },
       );
 
-      expect(ok).toBe(false);
+      expect(ok.success).toBe(false);
       expect(warnings.some((message) => message.includes("outside allowedPaths"))).toBe(true);
       expect(await commitsAheadOfMain(repoRoot, branch)).toBe(0);
       expect(await git(worktreePath, ["status", "--short"])).toContain("?? extra.ts");
@@ -270,12 +332,14 @@ describe.concurrent("runTask e2e", () => {
         task,
         { targetRepoRoot: repoRoot, harnessRoot },
         {
-          invokeAgent: async ({ cwd }) => {
-            attempt += 1;
-            const value = attempt === 1 ? "first" : "second";
-            await writeFile(join(cwd, "src.ts"), `export const ready = "${value}";\n`);
-            return { success: true, stderr: "" };
-          },
+          createIsolationBackend: makeFakeBackendFactory({
+            runAgent: async (cwd) => {
+              attempt += 1;
+              const value = attempt === 1 ? "first" : "second";
+              await writeFile(join(cwd, "src.ts"), `export const ready = "${value}";\n`);
+              return { success: true, stderr: "" };
+            },
+          }),
           runAllGates: async () => {
             if (attempt === 1) {
               return [
@@ -285,7 +349,6 @@ describe.concurrent("runTask e2e", () => {
 
             return [{ name: "typecheck", passed: true, exitCode: 0, output: "" }];
           },
-          runCommand: async () => ({ exitCode: 0, stderr: "" }),
           log: {
             info: () => {},
             warn: (message) => warnings.push(message),
@@ -296,7 +359,7 @@ describe.concurrent("runTask e2e", () => {
         },
       );
 
-      expect(ok).toBe(true);
+      expect(ok.success).toBe(true);
       expect(attempt).toBe(2);
       expect(await commitsAheadOfMain(repoRoot, branch)).toBe(1);
       expect(await git(worktreePath, ["status", "--short"])).toBe("");

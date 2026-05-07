@@ -10,8 +10,10 @@ gates:
     command: "npm run typecheck"
   - name: test
     command: "npm test -- --passWithNoTests"
-  - name: e2e
-    command: "npm run test:e2e"
+
+# e2e gates cost real tokens (per AGENTS.md) and must be opt-in per task
+# rather than running on every gate evaluation. Tasks that genuinely need
+# e2e coverage can add a gate explicitly in their task spec.
 
 maxAgentAttempts: 2
 model: sonnet

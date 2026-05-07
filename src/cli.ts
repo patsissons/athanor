@@ -52,20 +52,62 @@ program
 program
   .command("plan")
   .description("Generate a plan and enrich task specs")
-  .argument("<prompt>", "The planning prompt")
+  .argument("[prompt]", "The planning prompt (omit when using --from-plan)")
+  .option("--from-plan <path>", "Skip plan generation; enrich an existing plan YAML")
   .option("--stop-after <phase>", "Stop after phase (plan or tasks)")
   .option("--enrichment-critic", "Enable enrichment critic for task specs")
+  .option(
+    "--enrichment-model <model>",
+    "Model used to enrich each task spec (default: sonnet; e.g. opus, haiku)",
+  )
+  .option(
+    "--critic-max-retries <n>",
+    "Max critic→re-enrich retries per task (default: 1)",
+    parseFloat,
+  )
+  .option(
+    "--re-critic",
+    "Read-only audit: run the critic over existing enriched task specs without rewriting them. Requires --from-plan.",
+  )
   .option("--run-plan", "Automatically execute the plan after generation")
   .action(
     async (
-      prompt: string,
-      opts: { stopAfter?: string; enrichmentCritic?: boolean; runPlan?: boolean },
+      prompt: string | undefined,
+      opts: {
+        fromPlan?: string;
+        stopAfter?: string;
+        enrichmentCritic?: boolean;
+        enrichmentModel?: string;
+        criticMaxRetries?: number;
+        reCritic?: boolean;
+        runPlan?: boolean;
+      },
       cmd: Command,
     ) => {
       if (cmd.optsWithGlobals().debug) enableDebug();
 
       if (opts.stopAfter && opts.stopAfter !== "plan" && opts.stopAfter !== "tasks") {
         console.error("--stop-after must be 'plan' or 'tasks'");
+        process.exit(1);
+      }
+
+      if (prompt && opts.fromPlan) {
+        console.error("Provide either a prompt or --from-plan, not both");
+        process.exit(1);
+      }
+      if (!prompt && !opts.fromPlan) {
+        console.error("Provide a prompt or --from-plan <path>");
+        process.exit(1);
+      }
+      if (opts.reCritic && !opts.fromPlan) {
+        console.error("--re-critic requires --from-plan");
+        process.exit(1);
+      }
+      if (
+        opts.criticMaxRetries !== undefined &&
+        (!Number.isInteger(opts.criticMaxRetries) || opts.criticMaxRetries < 0)
+      ) {
+        console.error("--critic-max-retries must be a non-negative integer");
         process.exit(1);
       }
 
@@ -84,9 +126,17 @@ program
 
       const result = await runPlan({
         prompt,
+        planPath: opts.fromPlan ? resolve(targetRepoRoot, opts.fromPlan) : undefined,
         stopAfter: opts.stopAfter as "plan" | "tasks" | undefined,
         targetRepoRoot,
-        enrichmentCritic: opts.enrichmentCritic ? { enabled: true } : undefined,
+        ...(opts.enrichmentModel ? { enrichmentModel: opts.enrichmentModel } : {}),
+        enrichmentCritic: opts.enrichmentCritic
+          ? {
+              enabled: true,
+              ...(opts.criticMaxRetries !== undefined ? { maxRetries: opts.criticMaxRetries } : {}),
+            }
+          : undefined,
+        reCritic: opts.reCritic ?? false,
       });
 
       if (!result.success) {

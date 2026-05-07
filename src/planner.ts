@@ -1,7 +1,7 @@
-import { mkdir, writeFile, readdir } from "node:fs/promises";
+import { mkdir, writeFile, readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parse, stringify } from "yaml";
-import { PlanSpecSchema, type PlanSpec } from "./plan-spec.js";
+import { PlanSpecSchema, loadPlanSpec, type PlanSpec } from "./plan-spec.js";
 import { TaskSpecSchema, type TaskSpec } from "./task-spec.js";
 import type { AppSpec } from "./app-spec.js";
 import type { EvalResult } from "./eval-spec.js";
@@ -21,9 +21,11 @@ export interface PlanDeps {
     plan: PlanSpec;
     cwd: string;
     model: string;
+    enrichedSiblings?: TaskSpec[];
   }): Promise<EvalResult>;
   loadAppDefaults(targetRepoRoot: string): Promise<Partial<AppSpec>>;
   loadTaskDefaults(targetRepoRoot: string): Promise<Partial<TaskSpec>>;
+  loadPlanFile(path: string): Promise<PlanSpec>;
   writeFile(path: string, content: string): Promise<void>;
   mkdir(path: string): Promise<void>;
   readdir(path: string): Promise<string[]>;
@@ -38,6 +40,7 @@ const defaultDeps: PlanDeps = {
     critiqueTaskSpec({ ...opts, deps: { invokeAgent: invokeClaudeCode } }),
   loadAppDefaults,
   loadTaskDefaults,
+  loadPlanFile: loadPlanSpec,
   writeFile: (path, content) => writeFile(path, content, "utf8"),
   mkdir: (path) => mkdir(path, { recursive: true }).then(() => undefined),
   readdir: (path) => readdir(path),
@@ -54,9 +57,12 @@ export interface PlanResult {
 export async function runPlan(
   opts: {
     prompt?: string;
+    planPath?: string;
     stopAfter?: "plan" | "tasks";
     targetRepoRoot?: string;
-    enrichmentCritic?: { enabled: boolean; model?: string };
+    enrichmentModel?: string;
+    enrichmentCritic?: { enabled: boolean; model?: string; maxRetries?: number };
+    reCritic?: boolean;
   },
   deps: Partial<PlanDeps> = {},
 ): Promise<PlanResult> {
@@ -66,62 +72,150 @@ export async function runPlan(
     ...deps,
   };
 
-  const appDefaults = await d.loadAppDefaults(d.targetRepoRoot);
-  const taskDefaults = await d.loadTaskDefaults(d.targetRepoRoot);
-
-  // ─── Phase 1: Plan Generation ──────────────────────────────────
-  if (!opts.prompt) {
+  if (opts.prompt && opts.planPath) {
+    d.log.error("Provide either a prompt or --from-plan, not both");
+    return { success: false };
+  }
+  if (!opts.prompt && !opts.planPath) {
     d.log.error("No prompt provided");
     return { success: false };
   }
-
-  d.log.info("Phase 1: Generating plan with Opus");
-  const prompt = buildPlanPrompt(opts.prompt, appDefaults, taskDefaults);
-  const result = await d.invokeAgent({
-    prompt,
-    cwd: d.targetRepoRoot,
-    model: "opus",
-  });
-
-  if (!result.success) {
-    d.log.error(`Plan agent invocation failed: ${result.stderr}`);
+  if (opts.reCritic && !opts.planPath) {
+    d.log.error("--re-critic requires --from-plan");
     return { success: false };
   }
 
-  let yamlText: string;
-  try {
-    yamlText = extractYaml(result.stdout);
-  } catch (err) {
-    d.log.error(`Failed to extract YAML from plan agent output: ${String(err)}`);
-    d.log.error(`Raw output (first 500 chars): ${result.stdout.slice(0, 500)}`);
-    return { success: false };
-  }
+  const appDefaults = await d.loadAppDefaults(d.targetRepoRoot);
+  const taskDefaults = await d.loadTaskDefaults(d.targetRepoRoot);
 
   let plan: PlanSpec;
-  try {
-    plan = PlanSpecSchema.parse(parse(yamlText));
-  } catch (err) {
-    d.log.error(`Plan YAML failed validation: ${String(err)}`);
-    d.log.error(`Extracted YAML:\n${yamlText}`);
-    return { success: false };
+  let planPath: string;
+
+  if (opts.planPath) {
+    // ─── Phase 1 (skipped): load existing plan ─────────────────────
+    d.log.info(`Loading plan from ${opts.planPath}`);
+    try {
+      plan = await d.loadPlanFile(opts.planPath);
+    } catch (err) {
+      d.log.error(`Failed to load plan from ${opts.planPath}: ${String(err)}`);
+      return { success: false };
+    }
+    planPath = opts.planPath;
+    d.log.info(`Plan "${plan.name ?? plan.id}" contains ${plan.tasks.length} task(s)`);
+
+    if (opts.stopAfter === "plan") {
+      d.log.info("Stopping after plan load (--stop-after plan)");
+      return { success: true, planPath };
+    }
+  } else {
+    // ─── Phase 1: Plan Generation ────────────────────────────────
+    d.log.info("Phase 1: Generating plan with Opus");
+    const prompt = buildPlanPrompt(opts.prompt!, appDefaults, taskDefaults);
+    const result = await d.invokeAgent({
+      prompt,
+      cwd: d.targetRepoRoot,
+      model: "opus",
+    });
+
+    if (!result.success) {
+      d.log.error(`Plan agent invocation failed: ${result.stderr}`);
+      return { success: false };
+    }
+
+    let yamlText: string;
+    try {
+      yamlText = extractYaml(result.stdout);
+    } catch (err) {
+      d.log.error(`Failed to extract YAML from plan agent output: ${String(err)}`);
+      d.log.error(`Raw output (first 500 chars): ${result.stdout.slice(0, 500)}`);
+      return { success: false };
+    }
+
+    try {
+      plan = PlanSpecSchema.parse(parse(yamlText));
+    } catch (err) {
+      d.log.error(`Plan YAML failed validation: ${String(err)}`);
+      d.log.error(`Extracted YAML:\n${yamlText}`);
+      return { success: false };
+    }
+
+    const plansDir = resolve(d.targetRepoRoot, ".athanor", "plans");
+    await d.mkdir(plansDir);
+    planPath = resolve(plansDir, `${plan.id}.yaml`);
+    await d.writeFile(planPath, stringify(plan));
+    d.log.info(`Plan written to ${planPath}`);
+    d.log.info(`Plan "${plan.name ?? plan.id}" contains ${plan.tasks.length} task(s)`);
+
+    if (opts.stopAfter === "plan") {
+      d.log.info("Stopping after plan generation (--stop-after plan)");
+      return { success: true, planPath };
+    }
   }
 
-  const plansDir = resolve(d.targetRepoRoot, ".athanor", "plans");
-  await d.mkdir(plansDir);
-  const planPath = resolve(plansDir, `${plan.id}.yaml`);
-  await d.writeFile(planPath, stringify(plan));
-  d.log.info(`Plan written to ${planPath}`);
-  d.log.info(`Plan "${plan.name ?? plan.id}" contains ${plan.tasks.length} task(s)`);
+  // ─── Audit mode: --re-critic ────────────────────────────────────
+  // Read-only pass that runs the critic over already-enriched task
+  // specs without rewriting them. Useful after the critic prompt or
+  // schema changes, or when iterating on a plan's task descriptions.
+  if (opts.reCritic) {
+    const tasksDir = resolve(d.targetRepoRoot, ".athanor", "tasks", plan.id);
+    const criticModel = opts.enrichmentCritic?.model ?? "opus";
 
-  if (opts.stopAfter === "plan") {
-    d.log.info("Stopping after plan generation (--stop-after plan)");
-    return { success: true, planPath };
+    d.log.info(`Re-critic audit: loading enriched specs from ${tasksDir}`);
+
+    const taskSpecs: TaskSpec[] = [];
+    for (const planTask of plan.tasks) {
+      const taskPath = resolve(tasksDir, `${planTask.id}.yaml`);
+      try {
+        const raw = await readFile(taskPath, "utf8");
+        taskSpecs.push(TaskSpecSchema.parse(parse(raw)));
+      } catch (err) {
+        d.log.warn(`Could not load enriched task ${planTask.id}: ${String(err)}`);
+      }
+    }
+
+    if (taskSpecs.length === 0) {
+      d.log.error(
+        `No enriched task specs found under ${tasksDir}. Run \`athanor plan --from-plan\` first.`,
+      );
+      return { success: false };
+    }
+
+    let anyRejected = false;
+    for (const taskSpec of taskSpecs) {
+      const siblings = taskSpecs.filter((t) => t.id !== taskSpec.id);
+      d.log.info(`Re-critic on ${taskSpec.id} (${criticModel})`);
+      const criticResult = await d.critiqueTaskSpec({
+        taskSpec,
+        plan,
+        cwd: d.targetRepoRoot,
+        model: criticModel,
+        enrichedSiblings: siblings,
+      });
+
+      if (criticResult.passed) {
+        d.log.info(`  approved`);
+      } else {
+        anyRejected = true;
+        d.log.warn(`  rejected: ${criticResult.summary}`);
+        for (const issue of criticResult.issues ?? []) {
+          d.log.warn(`    [${issue.severity}] ${issue.criterion}: ${issue.description}`);
+        }
+      }
+    }
+
+    d.log.info(
+      anyRejected
+        ? `Re-critic finished with rejections; task files were NOT modified.`
+        : `Re-critic finished; all enriched specs approved.`,
+    );
+    return { success: !anyRejected, planPath };
   }
 
   // ─── Phase 2: Task Generation ──────────────────────────────────
   const tasksDir = resolve(d.targetRepoRoot, ".athanor", "tasks", plan.id);
 
-  d.log.info("Phase 2: Generating task specs with Sonnet");
+  const enrichmentModel = opts.enrichmentModel ?? "sonnet";
+  d.log.info(`Phase 2: Generating task specs with ${enrichmentModel}`);
   await d.mkdir(tasksDir);
 
   // Check which tasks already have YAML files so we can skip them
@@ -134,6 +228,24 @@ export async function runPlan(
   const existingTaskIds = new Set(
     existingFiles.filter((f) => f.endsWith(".yaml")).map((f) => f.replace(/\.yaml$/, "")),
   );
+
+  // Track enriched siblings so the critic can detect cross-task drift in
+  // file paths, type names, and signatures. Pre-load any task specs that
+  // already exist on disk (resume case) so the first new task enriched
+  // in this run still sees prior siblings.
+  const enrichedSiblings: TaskSpec[] = [];
+  for (const planTask of plan.tasks) {
+    if (!existingTaskIds.has(planTask.id)) continue;
+    const existingPath = resolve(tasksDir, `${planTask.id}.yaml`);
+    try {
+      const raw = await readFile(existingPath, "utf8");
+      enrichedSiblings.push(TaskSpecSchema.parse(parse(raw)));
+    } catch (err) {
+      d.log.warn(
+        `Could not load existing task ${planTask.id} for cross-task context: ${String(err)}`,
+      );
+    }
+  }
 
   for (const planTask of plan.tasks) {
     if (existingTaskIds.has(planTask.id)) {
@@ -148,48 +260,59 @@ export async function runPlan(
       targetTaskId: planTask.id,
       taskDefaults,
     });
-    const enrichResult = await d.invokeAgent({
-      prompt: enrichPrompt,
-      cwd: d.targetRepoRoot,
-      model: "sonnet",
+
+    // Sonnet's enrichment output is occasionally an unparseable YAML
+    // (truncated, mid-string, etc.). Retry once with a strict-YAML hint
+    // before failing the whole run.
+    const initialSpec = await invokeAndParseTaskSpec({
+      d,
+      basePrompt: enrichPrompt,
+      taskId: planTask.id,
+      attemptLabel: "initial enrichment",
+      yamlRetries: 1,
+      model: enrichmentModel,
     });
-
-    if (!enrichResult.success) {
-      d.log.error(`Task enrichment agent failed for ${planTask.id}: ${enrichResult.stderr}`);
+    if (!initialSpec) {
       return { success: false };
     }
+    let taskSpec: TaskSpec = initialSpec;
 
-    let taskYaml: string;
-    try {
-      taskYaml = extractYaml(enrichResult.stdout);
-    } catch (err) {
-      d.log.error(`Failed to extract YAML for task ${planTask.id}: ${String(err)}`);
-      return { success: false };
-    }
-
-    let taskSpec: TaskSpec;
-    try {
-      taskSpec = TaskSpecSchema.parse(parse(taskYaml));
-    } catch (err) {
-      d.log.error(`Task YAML validation failed for ${planTask.id}: ${String(err)}`);
-      d.log.error(`Extracted YAML:\n${taskYaml}`);
-      return { success: false };
-    }
-
-    // ─── Optional: Single-pass enrichment critic ─────────────────
+    // ─── Optional: enrichment critic with bounded retry loop ─────
+    let unresolvedCritic: EvalResult | undefined;
     if (opts.enrichmentCritic?.enabled) {
       const criticModel = opts.enrichmentCritic.model ?? "opus";
-      d.log.info(`Running enrichment critic on ${planTask.id} (${criticModel})`);
-      const criticResult = await d.critiqueTaskSpec({
-        taskSpec,
-        plan,
-        cwd: d.targetRepoRoot,
-        model: criticModel,
-      });
+      const maxRetries = opts.enrichmentCritic.maxRetries ?? 1;
+      let attempt = 0;
 
-      if (!criticResult.passed) {
+      while (true) {
+        d.log.info(
+          `Running enrichment critic on ${planTask.id} (${criticModel}, attempt ${attempt + 1}/${maxRetries + 1})`,
+        );
+        const criticResult = await d.critiqueTaskSpec({
+          taskSpec,
+          plan,
+          cwd: d.targetRepoRoot,
+          model: criticModel,
+          enrichedSiblings,
+        });
+
+        if (criticResult.passed) {
+          d.log.info(`Critic approved ${planTask.id}`);
+          break;
+        }
+
+        if (attempt >= maxRetries) {
+          unresolvedCritic = criticResult;
+          d.log.warn(
+            `Critic still rejected ${planTask.id} after ${attempt} re-enrichment(s); using last spec. Last summary: ${criticResult.summary}`,
+          );
+          break;
+        }
+
         d.log.warn(`Critic rejected ${planTask.id}: ${criticResult.summary}`);
-        d.log.info(`Re-enriching ${planTask.id} with critic feedback`);
+        d.log.info(
+          `Re-enriching ${planTask.id} with critic feedback (retry ${attempt + 1}/${maxRetries})`,
+        );
 
         // Build a new enrichment prompt that includes the critic feedback
         const criticFeedback = [
@@ -210,33 +333,34 @@ export async function runPlan(
           assets: { "Critic Feedback": criticFeedback },
         });
 
-        const retryResult = await d.invokeAgent({
-          prompt: retryPrompt,
-          cwd: d.targetRepoRoot,
-          model: "sonnet",
+        const reEnriched = await invokeAndParseTaskSpec({
+          d,
+          basePrompt: retryPrompt,
+          taskId: planTask.id,
+          attemptLabel: `critic retry ${attempt + 1}`,
+          yamlRetries: 1,
+          model: enrichmentModel,
         });
 
-        if (retryResult.success) {
-          try {
-            const retryYaml = extractYaml(retryResult.stdout);
-            taskSpec = TaskSpecSchema.parse(parse(retryYaml));
-            d.log.info(`Re-enrichment succeeded for ${planTask.id}`);
-          } catch (err) {
-            d.log.warn(
-              `Re-enrichment parse failed for ${planTask.id}, using original spec: ${String(err)}`,
-            );
-          }
-        } else {
-          d.log.warn(`Re-enrichment agent failed for ${planTask.id}, using original spec`);
+        if (!reEnriched) {
+          unresolvedCritic = criticResult;
+          d.log.warn(`Re-enrichment failed for ${planTask.id}, using last accepted spec`);
+          break;
         }
-      } else {
-        d.log.info(`Critic approved ${planTask.id}`);
+
+        taskSpec = reEnriched;
+        d.log.info(`Re-enrichment succeeded for ${planTask.id}; re-running critic`);
+        attempt++;
       }
     }
 
     const taskPath = resolve(tasksDir, `${planTask.id}.yaml`);
-    await d.writeFile(taskPath, stringify(taskSpec));
+    const fileContent = unresolvedCritic
+      ? renderUnresolvedCriticHeader(unresolvedCritic) + stringify(taskSpec)
+      : stringify(taskSpec);
+    await d.writeFile(taskPath, fileContent);
     d.log.info(`Task written to ${taskPath}`);
+    enrichedSiblings.push(taskSpec);
   }
 
   if (opts.stopAfter === "tasks") {
@@ -244,4 +368,100 @@ export async function runPlan(
   }
 
   return { success: true, planPath };
+}
+
+/**
+ * Invoke the enrichment agent and try to extract+validate a TaskSpec from
+ * its output. Retries the agent call up to `yamlRetries` times on YAML
+ * extraction or schema validation failure, appending a strict-YAML hint
+ * to the prompt on each retry. Returns the parsed TaskSpec or null if
+ * all attempts fail (an error is logged in that case).
+ */
+async function invokeAndParseTaskSpec(opts: {
+  d: PlanDeps;
+  basePrompt: string;
+  taskId: string;
+  attemptLabel: string;
+  yamlRetries: number;
+  model: string;
+}): Promise<TaskSpec | null> {
+  const { d, basePrompt, taskId, attemptLabel, yamlRetries, model } = opts;
+  let lastErr: string | undefined;
+
+  for (let attempt = 0; attempt <= yamlRetries; attempt++) {
+    const prompt =
+      attempt === 0 || !lastErr
+        ? basePrompt
+        : `${basePrompt}\n\n## CRITICAL: Previous output was not valid YAML\n` +
+          `Reason: ${lastErr}\n\n` +
+          `Output ONLY valid YAML conforming to the TaskSpec schema. ` +
+          `Do not include markdown fences, prose, or commentary before or after the YAML.`;
+
+    const result = await d.invokeAgent({
+      prompt,
+      cwd: d.targetRepoRoot,
+      model,
+    });
+
+    if (!result.success) {
+      lastErr = `agent error: ${result.stderr}`;
+      d.log.warn(
+        `Enrichment agent failed for ${taskId} (${attemptLabel}, try ${attempt + 1}/${yamlRetries + 1}): ${result.stderr}`,
+      );
+      continue;
+    }
+
+    try {
+      const yaml = extractYaml(result.stdout);
+      return TaskSpecSchema.parse(parse(yaml));
+    } catch (err) {
+      lastErr = String(err);
+      d.log.warn(
+        `YAML/schema parse failed for ${taskId} (${attemptLabel}, try ${attempt + 1}/${yamlRetries + 1}): ${lastErr}`,
+      );
+    }
+  }
+
+  d.log.error(
+    `All ${yamlRetries + 1} parse attempts exhausted for ${taskId} (${attemptLabel}). Last error: ${lastErr}`,
+  );
+  return null;
+}
+
+/**
+ * Build a YAML comment block describing critic concerns that were
+ * not resolved before retries were exhausted. Prepended to the task
+ * YAML so an implementing agent reading the file sees the open
+ * issues — the comments are ignored by the YAML parser, so the spec
+ * still loads cleanly.
+ */
+export function renderUnresolvedCriticHeader(critic: EvalResult): string {
+  const lines: string[] = [];
+  lines.push("# ── CRITIC OVERRIDDEN ──────────────────────────────────────────");
+  lines.push("# This spec was kept after the critic→re-enrich retry budget was");
+  lines.push("# exhausted. Address the issues below before sending to a coding agent,");
+  lines.push("# or accept them as known limitations.");
+  lines.push("#");
+  lines.push("# Last critic summary:");
+  for (const line of (critic.summary ?? "").split("\n")) {
+    lines.push(`#   ${line}`);
+  }
+  if (critic.issues && critic.issues.length > 0) {
+    lines.push("#");
+    lines.push("# Unresolved issues:");
+    for (const issue of critic.issues) {
+      lines.push(`#   [${issue.severity}] ${issue.criterion}`);
+      for (const dline of issue.description.split("\n")) {
+        lines.push(`#     ${dline}`);
+      }
+      if (issue.suggestion) {
+        for (const sline of issue.suggestion.split("\n")) {
+          lines.push(`#     suggestion: ${sline}`);
+        }
+      }
+    }
+  }
+  lines.push("# ──────────────────────────────────────────────────────────────");
+  lines.push("");
+  return lines.join("\n");
 }

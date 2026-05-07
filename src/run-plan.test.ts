@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { runPlanExecution, type RunPlanDeps } from "./run-plan.js";
 import { TaskSpecSchema, type TaskSpec } from "./task-spec.js";
 import type { PlanSpec } from "./plan-spec.js";
-import type { WorktreeLike, RunTaskLogger } from "./orchestrator.js";
+import type { RunTaskLogger } from "./orchestrator.js";
+import type { IsolationBackend, IsolationConfig } from "./isolation/index.js";
 
 const samplePlan: PlanSpec = {
   id: "add-favorites",
@@ -33,20 +34,55 @@ function makeLogger() {
   return { logger, messages };
 }
 
-function makeDeps(overrides: Partial<RunPlanDeps> = {}): RunPlanDeps {
-  const { logger } = makeLogger();
-  const worktree: WorktreeLike = {
-    branch: "athanor/add-favorites/20260423-120000-abcd",
+interface FakeBackendOpts {
+  branch?: string;
+  installExitCode?: number;
+  installStderr?: string;
+  createError?: Error;
+  pushError?: Error;
+}
+
+function makeFakeBackend(opts: FakeBackendOpts = {}): IsolationBackend {
+  return {
+    branch: opts.branch ?? "athanor/add-favorites/20260423-120000-abcd",
     path: "/tmp/wt",
-    create: vi.fn().mockResolvedValue("/tmp/wt"),
+    create: vi.fn().mockImplementation(async () => {
+      if (opts.createError) throw opts.createError;
+      return "/tmp/wt";
+    }),
     changedFiles: vi.fn().mockResolvedValue([]),
     diff: vi.fn().mockResolvedValue(""),
     commitAll: vi.fn().mockResolvedValue(undefined),
-    push: vi.fn().mockResolvedValue(undefined),
+    push: vi.fn().mockImplementation(async () => {
+      if (opts.pushError) throw opts.pushError;
+    }),
+    destroy: vi.fn().mockResolvedValue(undefined),
+    runAgent: vi.fn().mockResolvedValue({ success: true, stdout: "", stderr: "", parsed: null }),
+    runCommand: vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args[0] === "ci") {
+        return {
+          exitCode: opts.installExitCode ?? 0,
+          stdout: "",
+          stderr: opts.installStderr ?? "",
+        };
+      }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    }),
   };
+}
 
-  return {
-    createWorktree: vi.fn(() => worktree),
+function makeDeps(
+  overrides: Partial<RunPlanDeps> & { backend?: IsolationBackend } = {},
+): RunPlanDeps & { backend: IsolationBackend } {
+  const { logger } = makeLogger();
+  const backend = overrides.backend ?? makeFakeBackend();
+
+  // Strip the helper-only `backend` field before spreading into RunPlanDeps.
+  const { backend: _drop, ...realOverrides } = overrides;
+  void _drop;
+
+  const deps: RunPlanDeps = {
+    createIsolationBackend: vi.fn(async () => backend),
     makeRunId: vi.fn(() => "20260423-120000-abcd"),
     loadPlanSpec: vi.fn(async () => samplePlan),
     loadTaskSpec: vi.fn(async () => sampleTask),
@@ -61,16 +97,16 @@ function makeDeps(overrides: Partial<RunPlanDeps> = {}): RunPlanDeps {
     })),
     formatCompletedTasksContext: vi.fn(() => ""),
     runTaskLoop: vi.fn(async () => ({ success: true, summary: "Done." })),
-    invokeAgent: vi.fn(async () => ({ success: true, stderr: "" })),
     runAllGates: vi.fn(async () => []),
     runEvaluator: vi.fn(async () => ({ passed: true, issues: [], summary: "OK" })),
-    runCommand: vi.fn(async () => ({ exitCode: 0, stderr: "" })),
     readdir: vi.fn(async () => ["task-1.yaml", "task-2.yaml", "task-3.yaml"]),
     log: logger,
     harnessRoot: "/harness",
     targetRepoRoot: "/repo",
-    ...overrides,
+    ...realOverrides,
   };
+
+  return Object.assign(deps, { backend });
 }
 
 const planOpts = { targetRepoRoot: "/repo", harnessRoot: "/harness" };
@@ -129,7 +165,7 @@ describe("runPlanExecution", () => {
 
     expect(ok).toBe(true);
     expect(deps.runTaskLoop).not.toHaveBeenCalled();
-    expect(deps.createWorktree).not.toHaveBeenCalled();
+    expect(deps.createIsolationBackend).not.toHaveBeenCalled();
   });
 
   it("fails on pre-check mismatch", async () => {
@@ -164,36 +200,38 @@ describe("runPlanExecution", () => {
     expect(deps.appendCompletedTask).toHaveBeenCalledTimes(1);
   });
 
-  it("creates worktree with plan id", async () => {
+  it("creates one shared isolation backend per plan run with plan id", async () => {
     const deps = makeDeps();
 
     await runPlanExecution("plans/test.yaml", planOpts, deps);
 
-    expect(deps.createWorktree).toHaveBeenCalledWith(
-      "/repo",
-      "/harness",
-      "add-favorites",
-      "20260423-120000-abcd",
+    expect(deps.createIsolationBackend).toHaveBeenCalledTimes(1);
+    expect(deps.createIsolationBackend).toHaveBeenCalledWith(
+      { backend: "worktree" },
+      expect.objectContaining({
+        targetRepoRoot: "/repo",
+        harnessRoot: "/harness",
+        identifier: "add-favorites",
+        runId: "20260423-120000-abcd",
+      }),
     );
   });
 
-  it("runs npm ci in worktree", async () => {
+  it("runs npm ci through isolation.runCommand", async () => {
     const deps = makeDeps();
 
     await runPlanExecution("plans/test.yaml", planOpts, deps);
 
     const ciCalls = vi
-      .mocked(deps.runCommand)
-      .mock.calls.filter((call) => call[0] === "npm" && call[1][0] === "ci");
+      .mocked(deps.backend.runCommand)
+      .mock.calls.filter((call) => call[0] === "npm" && (call[1] as string[])[0] === "ci");
     expect(ciCalls).toHaveLength(1);
   });
 
   it("fails when npm ci fails", async () => {
     const { logger, messages } = makeLogger();
-    const deps = makeDeps({
-      log: logger,
-      runCommand: vi.fn(async () => ({ exitCode: 1, stderr: "install failed" })),
-    });
+    const backend = makeFakeBackend({ installExitCode: 1, installStderr: "install failed" });
+    const deps = makeDeps({ log: logger, backend });
 
     const ok = await runPlanExecution("plans/test.yaml", planOpts, deps);
 
@@ -220,41 +258,88 @@ describe("runPlanExecution", () => {
   });
 
   it("pushes when push option is set", async () => {
-    const worktree: WorktreeLike = {
-      branch: "athanor/add-favorites/run",
-      path: "/tmp/wt",
-      create: vi.fn().mockResolvedValue("/tmp/wt"),
-      changedFiles: vi.fn().mockResolvedValue([]),
-      diff: vi.fn().mockResolvedValue(""),
-      commitAll: vi.fn().mockResolvedValue(undefined),
-      push: vi.fn().mockResolvedValue(undefined),
-    };
-    const deps = makeDeps({
-      createWorktree: vi.fn(() => worktree),
-    });
+    const deps = makeDeps();
 
     await runPlanExecution("plans/test.yaml", { ...planOpts, push: true }, deps);
 
-    expect(worktree.push).toHaveBeenCalled();
+    expect(deps.backend.push).toHaveBeenCalled();
   });
 
   it("does not push by default", async () => {
-    const worktree: WorktreeLike = {
-      branch: "athanor/add-favorites/run",
-      path: "/tmp/wt",
-      create: vi.fn().mockResolvedValue("/tmp/wt"),
-      changedFiles: vi.fn().mockResolvedValue([]),
-      diff: vi.fn().mockResolvedValue(""),
-      commitAll: vi.fn().mockResolvedValue(undefined),
-      push: vi.fn().mockResolvedValue(undefined),
-    };
+    const deps = makeDeps();
+
+    await runPlanExecution("plans/test.yaml", planOpts, deps);
+
+    expect(deps.backend.push).not.toHaveBeenCalled();
+  });
+
+  it("destroys the isolation backend in finally on success", async () => {
+    const deps = makeDeps();
+
+    await runPlanExecution("plans/test.yaml", planOpts, deps);
+
+    expect(deps.backend.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("destroys the isolation backend in finally even when a task fails", async () => {
     const deps = makeDeps({
-      createWorktree: vi.fn(() => worktree),
+      runTaskLoop: vi.fn(async () => ({ success: false })),
     });
 
     await runPlanExecution("plans/test.yaml", planOpts, deps);
 
-    expect(worktree.push).not.toHaveBeenCalled();
+    expect(deps.backend.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("forwards plan-level isolation config to the factory", async () => {
+    const planWithIso: PlanSpec = {
+      ...samplePlan,
+      isolation: { backend: "sandcastle", provider: "docker" },
+    };
+    const deps = makeDeps({
+      loadPlanSpec: vi.fn(async () => planWithIso),
+    });
+
+    await runPlanExecution("plans/test.yaml", planOpts, deps);
+
+    expect(deps.createIsolationBackend).toHaveBeenCalledWith(
+      { backend: "sandcastle", provider: "docker" },
+      expect.objectContaining({ identifier: "add-favorites" }),
+    );
+  });
+
+  it("forwards app-level isolation config when no plan-level override", async () => {
+    const appIso: IsolationConfig = { backend: "sandcastle" };
+    const deps = makeDeps({
+      loadAppDefaults: vi.fn(async () => ({ isolation: appIso })),
+    });
+
+    await runPlanExecution("plans/test.yaml", planOpts, deps);
+
+    expect(deps.createIsolationBackend).toHaveBeenCalledWith(appIso, expect.anything());
+  });
+
+  it("warns and ignores per-task isolation overrides in plan mode", async () => {
+    const { logger, messages } = makeLogger();
+    const taskWithIso = TaskSpecSchema.parse({
+      ...sampleTask,
+      isolation: { backend: "sandcastle" },
+    });
+    const deps = makeDeps({
+      log: logger,
+      loadTaskSpec: vi.fn(async () => taskWithIso),
+    });
+
+    await runPlanExecution("plans/test.yaml", planOpts, deps);
+
+    expect(messages.warn.some((m) => m.includes("task-level override ignored"))).toBe(true);
+    // The plan-level (default worktree) backend is still used; the factory
+    // is called once with { backend: "worktree" }.
+    expect(deps.createIsolationBackend).toHaveBeenCalledTimes(1);
+    expect(deps.createIsolationBackend).toHaveBeenCalledWith(
+      { backend: "worktree" },
+      expect.anything(),
+    );
   });
 
   it("fails when task directory does not exist", async () => {
@@ -308,7 +393,6 @@ describe("runPlanExecution", () => {
   });
 
   it("fails when a task file is missing on disk after pre-check passes", async () => {
-    // The plan lists three tasks but only two YAML files exist on disk.
     const { logger, messages } = makeLogger();
     const deps = makeDeps({
       log: logger,
@@ -321,33 +405,22 @@ describe("runPlanExecution", () => {
     expect(messages.error.some((m) => m.includes("Task file not found for task-3"))).toBe(true);
   });
 
-  it("propagates worktree creation failure", async () => {
-    const failingWorktree: WorktreeLike = {
-      branch: "athanor/x/y",
-      path: "/tmp/wt",
-      create: vi.fn().mockRejectedValue(new Error("git worktree add failed: branch exists")),
-      changedFiles: vi.fn().mockResolvedValue([]),
-      diff: vi.fn().mockResolvedValue(""),
-      commitAll: vi.fn().mockResolvedValue(undefined),
-      push: vi.fn().mockResolvedValue(undefined),
-    };
-    const deps = makeDeps({
-      createWorktree: vi.fn(() => failingWorktree),
+  it("propagates isolation create failure", async () => {
+    const failing = makeFakeBackend({
+      createError: new Error("git worktree add failed: branch exists"),
     });
+    const deps = makeDeps({ backend: failing });
 
-    // run-plan does not catch wt.create errors; the rejection should surface.
     await expect(runPlanExecution("plans/test.yaml", planOpts, deps)).rejects.toThrow(
       /git worktree add failed/,
     );
-    // No tasks should have been appended to completed-tasks because we failed
-    // before the loop started.
     expect(deps.runTaskLoop).not.toHaveBeenCalled();
     expect(deps.appendCompletedTask).not.toHaveBeenCalled();
+    // destroy still runs in finally even when create fails
+    expect(failing.destroy).toHaveBeenCalledTimes(1);
   });
 
   it("surfaces a clear error when a task is in git history but missing from completed-tasks.yaml", async () => {
-    // Realistic resume corruption: a previous run committed task-2 but its
-    // process died before writing the YAML entry. Pre-check must reject this.
     const { logger, messages } = makeLogger();
     const deps = makeDeps({
       log: logger,
@@ -372,7 +445,7 @@ describe("runPlanExecution", () => {
     const ok = await runPlanExecution("plans/test.yaml", planOpts, deps);
 
     expect(ok).toBe(false);
-    expect(deps.createWorktree).not.toHaveBeenCalled();
+    expect(deps.createIsolationBackend).not.toHaveBeenCalled();
     expect(messages.error.some((m) => m.includes("git history but not in completed-tasks"))).toBe(
       true,
     );
