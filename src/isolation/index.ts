@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { McpConfig, AgentResult } from "../agent.js";
 import { Worktree } from "../worktree.js";
 import { WorktreeBackend } from "./worktree-backend.js";
+import { SandcastleBackend } from "./sandcastle-backend.js";
 
 /**
  * Git-level operations on a worktree. Always satisfied by something
@@ -159,8 +160,16 @@ export async function createIsolationBackend(
       );
       return new WorktreeBackend(wt);
     }
-    case "sandcastle":
-      throw new Error("SandcastleBackend not yet implemented");
+    case "sandcastle": {
+      const wt = new Worktree(
+        args.targetRepoRoot,
+        args.harnessRoot,
+        args.identifier,
+        args.runId,
+        args.baseBranch,
+      );
+      return new SandcastleBackend(cfg, wt, args.targetRepoRoot);
+    }
     default: {
       const _exhaustive: never = cfg;
       void _exhaustive;

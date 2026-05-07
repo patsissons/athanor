@@ -99,10 +99,13 @@ describe("createIsolationBackend", () => {
     expect(typeof backend.destroy).toBe("function");
   });
 
-  it("stub-throws for the sandcastle backend until implemented", async () => {
-    await expect(createIsolationBackend({ backend: "sandcastle" }, args)).rejects.toThrow(
-      /SandcastleBackend not yet implemented/,
-    );
+  it("returns a SandcastleBackend for the sandcastle config", async () => {
+    const backend = await createIsolationBackend({ backend: "sandcastle" }, args);
+    expect(backend).toBeDefined();
+    expect(typeof backend.create).toBe("function");
+    expect(typeof backend.runCommand).toBe("function");
+    expect(typeof backend.runAgent).toBe("function");
+    expect(typeof backend.destroy).toBe("function");
   });
 
   it("throws on an unknown backend at runtime even when bypassing the type system", async () => {
