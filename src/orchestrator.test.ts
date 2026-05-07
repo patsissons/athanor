@@ -86,6 +86,7 @@ function makeRuntime(opts: {
         throw opts.pushError;
       }
     }),
+    destroy: vi.fn().mockResolvedValue(undefined),
   };
 
   const deps: RunTaskDeps = {

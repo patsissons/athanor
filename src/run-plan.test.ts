@@ -43,6 +43,7 @@ function makeDeps(overrides: Partial<RunPlanDeps> = {}): RunPlanDeps {
     diff: vi.fn().mockResolvedValue(""),
     commitAll: vi.fn().mockResolvedValue(undefined),
     push: vi.fn().mockResolvedValue(undefined),
+    destroy: vi.fn().mockResolvedValue(undefined),
   };
 
   return {
@@ -228,6 +229,7 @@ describe("runPlanExecution", () => {
       diff: vi.fn().mockResolvedValue(""),
       commitAll: vi.fn().mockResolvedValue(undefined),
       push: vi.fn().mockResolvedValue(undefined),
+      destroy: vi.fn().mockResolvedValue(undefined),
     };
     const deps = makeDeps({
       createWorktree: vi.fn(() => worktree),
@@ -247,6 +249,7 @@ describe("runPlanExecution", () => {
       diff: vi.fn().mockResolvedValue(""),
       commitAll: vi.fn().mockResolvedValue(undefined),
       push: vi.fn().mockResolvedValue(undefined),
+      destroy: vi.fn().mockResolvedValue(undefined),
     };
     const deps = makeDeps({
       createWorktree: vi.fn(() => worktree),
@@ -330,6 +333,7 @@ describe("runPlanExecution", () => {
       diff: vi.fn().mockResolvedValue(""),
       commitAll: vi.fn().mockResolvedValue(undefined),
       push: vi.fn().mockResolvedValue(undefined),
+      destroy: vi.fn().mockResolvedValue(undefined),
     };
     const deps = makeDeps({
       createWorktree: vi.fn(() => failingWorktree),

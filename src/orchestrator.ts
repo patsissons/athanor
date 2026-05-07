@@ -7,16 +7,12 @@ import { invokeClaudeCode } from "./agent.js";
 import { runEvaluator } from "./evaluator.js";
 import { log } from "./logger.js";
 import { runTaskLoop } from "./task-loop.js";
+import type { WorktreeLike } from "./isolation/index.js";
 
-export interface WorktreeLike {
-  readonly branch: string;
-  readonly path: string;
-  create(): Promise<string>;
-  changedFiles(): Promise<string[]>;
-  diff(): Promise<string>;
-  commitAll(message: string): Promise<void>;
-  push(): Promise<void>;
-}
+// Re-exported for backwards compatibility with callers that import
+// WorktreeLike from "./orchestrator.js". The canonical definition
+// lives in src/isolation/index.ts; new code should import from there.
+export type { WorktreeLike };
 
 export interface CommandResult {
   exitCode: number | null;

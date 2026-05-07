@@ -78,6 +78,7 @@ function makeDeps(opts: {
     diff: vi.fn().mockResolvedValue("diff --git a/src/page.tsx b/src/page.tsx\n+code"),
     commitAll: vi.fn().mockResolvedValue(undefined),
     push: vi.fn().mockResolvedValue(undefined),
+    destroy: vi.fn().mockResolvedValue(undefined),
   };
 
   const deps: TaskLoopDeps = {
