@@ -104,9 +104,9 @@ function makeRuntime(opts: {
     create: () => worktree.create(),
     changedFiles: () => worktree.changedFiles(),
     diff: () => worktree.diff(),
-    commitAll: (msg) => worktree.commitAll(msg),
+    commitAll: (msg: string) => worktree.commitAll(msg),
     push: () => worktree.push(),
-    destroy: () => worktree.destroy(),
+    destroy: vi.fn().mockResolvedValue(undefined),
     runAgent: vi.fn().mockImplementation(async () => {
       const r = agentResults.shift() ?? { success: true, stderr: "" };
       return { success: r.success, stdout: "", stderr: r.stderr, parsed: null, summary: r.summary };
@@ -124,10 +124,8 @@ function makeRuntime(opts: {
   };
 
   const deps: RunTaskDeps = {
-    createWorktree: vi.fn(() => worktree),
-    createIsolation: vi.fn(() => isolation),
+    createIsolationBackend: vi.fn(async () => isolation),
     makeRunId: vi.fn(() => "20260423-120000-abcd"),
-    invokeAgent: vi.fn(),
     runAllGates: vi
       .fn()
       .mockImplementation(
@@ -139,7 +137,6 @@ function makeRuntime(opts: {
       .mockImplementation(
         async () => evalResults.shift() ?? { passed: true, issues: [], summary: "Approved." },
       ),
-    runCommand: vi.fn(),
     log: logger,
   };
 
@@ -213,17 +210,20 @@ describe("runTask", () => {
     });
   });
 
-  it("forwards baseBranch to createWorktree", async () => {
+  it("forwards baseBranch to createIsolationBackend", async () => {
     const runtime = makeRuntime({});
 
     await runTask(makeTask(), { ...taskOpts, baseBranch: "athanor/prev/run" }, runtime.deps);
 
-    expect(runtime.deps.createWorktree).toHaveBeenCalledWith(
-      "/repo",
-      "/harness",
-      "demo",
-      "20260423-120000-abcd",
-      "athanor/prev/run",
+    expect(runtime.deps.createIsolationBackend).toHaveBeenCalledWith(
+      { backend: "worktree" },
+      {
+        targetRepoRoot: "/repo",
+        harnessRoot: "/harness",
+        identifier: "demo",
+        runId: "20260423-120000-abcd",
+        baseBranch: "athanor/prev/run",
+      },
     );
   });
 
@@ -232,13 +232,53 @@ describe("runTask", () => {
 
     await runTask(makeTask(), taskOpts, runtime.deps);
 
-    expect(runtime.deps.createWorktree).toHaveBeenCalledWith(
-      "/repo",
-      "/harness",
-      "demo",
-      "20260423-120000-abcd",
-      undefined,
+    expect(runtime.deps.createIsolationBackend).toHaveBeenCalledWith(
+      { backend: "worktree" },
+      {
+        targetRepoRoot: "/repo",
+        harnessRoot: "/harness",
+        identifier: "demo",
+        runId: "20260423-120000-abcd",
+        baseBranch: undefined,
+      },
     );
+  });
+
+  it("resolves an explicit task.isolation override and passes it to createIsolationBackend", async () => {
+    const runtime = makeRuntime({});
+
+    const task = makeTask({
+      isolation: { backend: "sandcastle", provider: "docker" },
+    });
+
+    await runTask(task, taskOpts, runtime.deps);
+
+    expect(runtime.deps.createIsolationBackend).toHaveBeenCalledWith(
+      { backend: "sandcastle", provider: "docker" },
+      expect.objectContaining({
+        targetRepoRoot: "/repo",
+        harnessRoot: "/harness",
+        identifier: "demo",
+      }),
+    );
+  });
+
+  it("calls isolation.destroy in finally on success", async () => {
+    const runtime = makeRuntime({});
+
+    await runTask(makeTask(), taskOpts, runtime.deps);
+
+    expect(runtime.isolation.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls isolation.destroy in finally even when the task fails", async () => {
+    const runtime = makeRuntime({
+      installResults: [{ exitCode: 1, stderr: "boom" }],
+    });
+
+    await runTask(makeTask(), taskOpts, runtime.deps);
+
+    expect(runtime.isolation.destroy).toHaveBeenCalledTimes(1);
   });
 
   it("skips push when push option is false", async () => {

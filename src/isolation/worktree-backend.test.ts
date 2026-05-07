@@ -39,7 +39,7 @@ describe("WorktreeBackend (delegation)", () => {
     expect(backend.path).toBe("/tmp/wt");
   });
 
-  it("delegates create/changedFiles/diff/commitAll/push/destroy", async () => {
+  it("delegates create/changedFiles/diff/commitAll/push to the wrapped worktree", async () => {
     const wt = makeMockWorktree();
     const backend = new WorktreeBackend(wt);
     await backend.create();
@@ -47,13 +47,21 @@ describe("WorktreeBackend (delegation)", () => {
     await backend.diff();
     await backend.commitAll("msg");
     await backend.push();
-    await backend.destroy();
     expect(wt.create).toHaveBeenCalledTimes(1);
     expect(wt.changedFiles).toHaveBeenCalledTimes(1);
     expect(wt.diff).toHaveBeenCalledTimes(1);
     expect(wt.commitAll).toHaveBeenCalledWith("msg");
     expect(wt.push).toHaveBeenCalledTimes(1);
-    expect(wt.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT propagate destroy() to the wrapped worktree", async () => {
+    // destroy() on the backend is a no-op — the host worktree is
+    // intentionally left on disk for human inspection; `athanor clean`
+    // is the explicit path for removing it.
+    const wt = makeMockWorktree();
+    const backend = new WorktreeBackend(wt);
+    await backend.destroy();
+    expect(wt.destroy).not.toHaveBeenCalled();
   });
 });
 

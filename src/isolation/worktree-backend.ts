@@ -107,7 +107,16 @@ export class WorktreeBackend implements IsolationBackend {
   }
 
   // ── Lifecycle ────────────────────────────────────────────────
-  destroy(): Promise<void> {
-    return this.wt.destroy();
+  /**
+   * No-op for the worktree backend: there are no per-task isolation
+   * resources to release on the host (the agent ran with `cwd:
+   * wt.path`, no container, no sandbox). The host worktree itself is
+   * intentionally left on disk for human inspection of failed runs;
+   * `athanor clean` is the explicit path for removing it. To
+   * actually tear down the host worktree, callers reach for
+   * `wt.destroy()` directly via the underlying WorktreeLike.
+   */
+  async destroy(): Promise<void> {
+    // intentionally empty
   }
 }

@@ -1,14 +1,19 @@
-import { execa } from "execa";
 import type { TaskSpec } from "./task-spec.js";
 import type { EvalResult, EvaluatorConfig } from "./eval-spec.js";
-import { Worktree, makeRunId } from "./worktree.js";
+import { makeRunId } from "./worktree.js";
 import { runAllGates, type GateResult } from "./gates.js";
 import { invokeClaudeCode } from "./agent.js";
 import { runEvaluator } from "./evaluator.js";
 import { log } from "./logger.js";
 import { runTaskLoop } from "./task-loop.js";
-import type { WorktreeLike, IsolationBackend } from "./isolation/index.js";
-import { WorktreeBackend } from "./isolation/worktree-backend.js";
+import {
+  resolveIsolationConfig,
+  createIsolationBackend,
+  type IsolationBackend,
+  type IsolationBackendArgs,
+  type IsolationConfig,
+  type WorktreeLike,
+} from "./isolation/index.js";
 import type { GateCommandRunner } from "./gates.js";
 
 // Re-exported for backwards compatibility with callers that import
@@ -34,72 +39,28 @@ export interface RunTaskResult {
 }
 
 export interface RunTaskDeps {
-  createWorktree(
-    targetRepoRoot: string,
-    harnessRoot: string,
-    identifier: string,
-    runId: string,
-    baseBranch?: string,
-  ): WorktreeLike;
+  /** Construct the IsolationBackend for this task. Default: the shared
+   *  factory in src/isolation/index.ts, which dispatches on
+   *  cfg.backend ("worktree" → WorktreeBackend wrapping a fresh
+   *  Worktree; "sandcastle" → SandcastleBackend once that lands).
+   *  Tests override this to inject a spy-able backend. */
+  createIsolationBackend(
+    cfg: IsolationConfig,
+    args: IsolationBackendArgs,
+  ): Promise<IsolationBackend>;
   makeRunId(): string;
-  invokeAgent(opts: {
-    prompt: string;
-    cwd: string;
-    model: string;
-  }): Promise<{ success: boolean; stderr: string; summary?: string }>;
   runAllGates(
     gates: TaskSpec["gates"],
     cwd: string,
     runCommand?: GateCommandRunner,
   ): Promise<GateResult[]>;
-  /** Construct the IsolationBackend that wraps the given worktree.
-   *  Default: `(wt) => new WorktreeBackend(wt)`. Tests override this
-   *  to inject a spy-able backend; the factory-driven dispatch on
-   *  `task.isolation` lands in the orchestrator-rewire commit. */
-  createIsolation?(wt: WorktreeLike): IsolationBackend;
   runEvaluator(opts: {
     task: TaskSpec;
     diff: string;
     evaluator: EvaluatorConfig;
     cwd: string;
   }): Promise<EvalResult>;
-  runCommand(
-    command: string,
-    args: string[],
-    opts: { cwd: string; timeoutMs: number },
-  ): Promise<CommandResult>;
   log: RunTaskLogger;
-}
-
-function createDefaultWorktree(
-  targetRepoRoot: string,
-  harnessRoot: string,
-  identifier: string,
-  runId: string,
-  baseBranch?: string,
-): WorktreeLike {
-  return new Worktree(targetRepoRoot, harnessRoot, identifier, runId, baseBranch);
-}
-
-function defaultCreateIsolation(wt: WorktreeLike): IsolationBackend {
-  return new WorktreeBackend(wt);
-}
-
-async function runSubprocess(
-  command: string,
-  args: string[],
-  opts: { cwd: string; timeoutMs: number },
-): Promise<CommandResult> {
-  const result = await execa(command, args, {
-    cwd: opts.cwd,
-    reject: false,
-    timeout: opts.timeoutMs,
-  });
-
-  return {
-    exitCode: result.exitCode ?? null,
-    stderr: result.stderr,
-  };
 }
 
 async function defaultRunEvaluator(opts: {
@@ -115,12 +76,10 @@ async function defaultRunEvaluator(opts: {
 }
 
 const defaultDeps: RunTaskDeps = {
-  createWorktree: createDefaultWorktree,
+  createIsolationBackend,
   makeRunId,
-  invokeAgent: invokeClaudeCode,
   runAllGates,
   runEvaluator: defaultRunEvaluator,
-  runCommand: runSubprocess,
   log,
 };
 
@@ -137,64 +96,76 @@ export async function runTask(
 
   runtime.log.info(`Starting task: ${task.id} (using ${task.model})`);
 
-  const wt = runtime.createWorktree(
-    opts.targetRepoRoot,
-    opts.harnessRoot,
-    task.id,
-    runtime.makeRunId(),
-    opts.baseBranch,
-  );
-  await wt.create();
-  runtime.log.debug(`Worktree created at ${wt.path} on branch ${wt.branch}`);
-
-  // Wrap the host worktree in an IsolationBackend so task-loop only
-  // sees the new seam. The factory-driven dispatch on task.isolation
-  // arrives in the orchestrator-rewire commit; this commit shims to
-  // the new shape with a default WorktreeBackend wrapping.
-  const isolation = (runtime.createIsolation ?? defaultCreateIsolation)(wt);
-
-  // ─── DETERMINISTIC NODE: warm the worktree ──────────────────
-  runtime.log.debug("Installing dependencies in worktree");
-  const installResult = await isolation.runCommand("npm", ["install"], {
-    timeoutMs: 5 * 60 * 1000,
+  // Resolve the IsolationConfig from task.isolation only — app- and
+  // plan-level merging is wired by run-plan-rewire. For direct runTask
+  // invocations, only the task-level field applies.
+  const isolationConfig = resolveIsolationConfig({ task: task.isolation });
+  const runId = runtime.makeRunId();
+  const isolation = await runtime.createIsolationBackend(isolationConfig, {
+    targetRepoRoot: opts.targetRepoRoot,
+    harnessRoot: opts.harnessRoot,
+    identifier: task.id,
+    runId,
+    baseBranch: opts.baseBranch,
   });
-  if (installResult.exitCode !== 0) {
-    runtime.log.error(`npm install failed:\n${installResult.stderr}`);
-    return { success: false, branch: wt.branch };
-  }
-  runtime.log.debug("Dependencies installed");
 
-  // ─── TASK LOOP: delegate to the shared retry loop ─────────────
-  const gateRunner: GateCommandRunner = async (command, _cwd, timeoutMs) => {
-    const result = await isolation.runCommand("sh", ["-c", command], { timeoutMs });
-    return {
-      exitCode: result.exitCode,
-      output: result.stdout + result.stderr,
+  try {
+    await isolation.create();
+    runtime.log.debug(`Worktree created at ${isolation.path} on branch ${isolation.branch}`);
+
+    // ─── DETERMINISTIC NODE: warm the worktree ──────────────────
+    runtime.log.debug("Installing dependencies in worktree");
+    const installResult = await isolation.runCommand("npm", ["install"], {
+      timeoutMs: 5 * 60 * 1000,
+    });
+    if (installResult.exitCode !== 0) {
+      runtime.log.error(`npm install failed:\n${installResult.stderr}`);
+      return { success: false, branch: isolation.branch };
+    }
+    runtime.log.debug("Dependencies installed");
+
+    // ─── TASK LOOP: delegate to the shared retry loop ─────────────
+    const gateRunner: GateCommandRunner = async (command, _cwd, timeoutMs) => {
+      const result = await isolation.runCommand("sh", ["-c", command], { timeoutMs });
+      return {
+        exitCode: result.exitCode,
+        output: result.stdout + result.stderr,
+      };
     };
-  };
 
-  const loopResult = await runTaskLoop(
-    task,
-    { maxAttempts },
-    {
-      isolation,
-      runAllGates: (gates) => runtime.runAllGates(gates, isolation.path, gateRunner),
-      runEvaluator: runtime.runEvaluator,
-      log: runtime.log,
-    },
-  );
+    const loopResult = await runTaskLoop(
+      task,
+      { maxAttempts },
+      {
+        isolation,
+        runAllGates: (gates) => runtime.runAllGates(gates, isolation.path, gateRunner),
+        runEvaluator: runtime.runEvaluator,
+        log: runtime.log,
+      },
+    );
 
-  if (!loopResult.success) {
-    return { success: false, branch: wt.branch };
-  }
+    if (!loopResult.success) {
+      return { success: false, branch: isolation.branch };
+    }
 
-  if (opts.push !== false) {
+    if (opts.push !== false) {
+      try {
+        await isolation.push();
+        runtime.log.info(`Pushed branch ${isolation.branch}`);
+      } catch (e) {
+        runtime.log.warn(`Push failed (maybe no remote configured): ${String(e)}`);
+      }
+    }
+    return { success: true, branch: isolation.branch };
+  } finally {
+    // Best-effort backend teardown. Container backends rely on this
+    // to release Docker resources; the host worktree backend
+    // intentionally leaves the worktree on disk for inspection (per
+    // src/worktree.ts:Worktree.destroy()).
     try {
-      await wt.push();
-      runtime.log.info(`Pushed branch ${wt.branch}`);
+      await isolation.destroy();
     } catch (e) {
-      runtime.log.warn(`Push failed (maybe no remote configured): ${String(e)}`);
+      runtime.log.warn(`Isolation destroy failed: ${String(e)}`);
     }
   }
-  return { success: true, branch: wt.branch };
 }
