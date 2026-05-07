@@ -1,6 +1,5 @@
 import { resolve } from "node:path";
 import { readdir } from "node:fs/promises";
-import { execa } from "execa";
 import type { PlanSpec } from "./plan-spec.js";
 import { loadPlanSpec } from "./plan-spec.js";
 import { loadTaskSpec, type TaskSpec } from "./task-spec.js";
@@ -11,9 +10,15 @@ import type { EvalResult, EvaluatorConfig } from "./eval-spec.js";
 import type { GateResult, GateCommandRunner } from "./gates.js";
 import { runAllGates } from "./gates.js";
 import { invokeClaudeCode } from "./agent.js";
-import { Worktree, makeRunId } from "./worktree.js";
+import { makeRunId } from "./worktree.js";
 import { runTaskLoop } from "./task-loop.js";
-import { WorktreeBackend } from "./isolation/worktree-backend.js";
+import {
+  resolveIsolationConfig,
+  createIsolationBackend,
+  type IsolationBackend,
+  type IsolationBackendArgs,
+  type IsolationConfig,
+} from "./isolation/index.js";
 import {
   loadCompletedTasks,
   appendCompletedTask,
@@ -25,15 +30,18 @@ import {
   type CrossReferenceResult,
 } from "./completed-tasks.js";
 import { log as defaultLog } from "./logger.js";
-import type { WorktreeLike, CommandResult, RunTaskLogger } from "./orchestrator.js";
+import type { RunTaskLogger } from "./orchestrator.js";
 
 export interface RunPlanDeps {
-  createWorktree(
-    targetRepoRoot: string,
-    harnessRoot: string,
-    identifier: string,
-    runId: string,
-  ): WorktreeLike;
+  /** Construct the IsolationBackend for the entire plan run.
+   *  Default: the shared factory in src/isolation/index.ts. One backend
+   *  is created at plan start and shared across every task — matching
+   *  the pre-existing single-shared-worktree model and keeping
+   *  branch / commit history coherent across the plan's tasks. */
+  createIsolationBackend(
+    cfg: IsolationConfig,
+    args: IsolationBackendArgs,
+  ): Promise<IsolationBackend>;
   makeRunId(): string;
   loadPlanSpec(path: string): Promise<PlanSpec>;
   loadTaskSpec(path: string, targetRepoRoot?: string): Promise<TaskSpec>;
@@ -48,11 +56,6 @@ export interface RunPlanDeps {
   ): CrossReferenceResult;
   formatCompletedTasksContext(tasks: CompletedTask[]): string;
   runTaskLoop: typeof runTaskLoop;
-  invokeAgent(opts: {
-    prompt: string;
-    cwd: string;
-    model: string;
-  }): Promise<{ success: boolean; stderr: string; summary?: string }>;
   runAllGates(
     gates: TaskSpec["gates"],
     cwd: string,
@@ -64,37 +67,10 @@ export interface RunPlanDeps {
     evaluator: EvaluatorConfig;
     cwd: string;
   }): Promise<EvalResult>;
-  runCommand(
-    command: string,
-    args: string[],
-    opts: { cwd: string; timeoutMs: number },
-  ): Promise<CommandResult>;
   readdir(path: string): Promise<string[]>;
   log: RunTaskLogger;
   harnessRoot: string;
   targetRepoRoot: string;
-}
-
-function createDefaultWorktree(
-  targetRepoRoot: string,
-  harnessRoot: string,
-  identifier: string,
-  runId: string,
-): WorktreeLike {
-  return new Worktree(targetRepoRoot, harnessRoot, identifier, runId);
-}
-
-async function runSubprocess(
-  command: string,
-  args: string[],
-  opts: { cwd: string; timeoutMs: number },
-): Promise<CommandResult> {
-  const result = await execa(command, args, {
-    cwd: opts.cwd,
-    reject: false,
-    timeout: opts.timeoutMs,
-  });
-  return { exitCode: result.exitCode ?? null, stderr: result.stderr };
 }
 
 async function defaultRunEvaluator(opts: {
@@ -112,7 +88,7 @@ async function defaultRunEvaluator(opts: {
 
 function buildDefaultDeps(targetRepoRoot: string, harnessRoot: string): RunPlanDeps {
   return {
-    createWorktree: createDefaultWorktree,
+    createIsolationBackend,
     makeRunId,
     loadPlanSpec,
     loadTaskSpec,
@@ -123,10 +99,8 @@ function buildDefaultDeps(targetRepoRoot: string, harnessRoot: string): RunPlanD
     crossReferenceCompletedTasks,
     formatCompletedTasksContext,
     runTaskLoop,
-    invokeAgent: invokeClaudeCode,
     runAllGates,
     runEvaluator: defaultRunEvaluator,
-    runCommand: runSubprocess,
     readdir: (path) => readdir(path),
     log: defaultLog,
     harnessRoot,
@@ -195,54 +169,44 @@ export async function runPlanExecution(
   // ─── Load app defaults ────────────────────────────────────────
   const appDefaults = await d.loadAppDefaults(d.targetRepoRoot);
 
-  // ─── Create worktree ──────────────────────────────────────────
-  const runId = d.makeRunId();
-  const wt = d.createWorktree(d.targetRepoRoot, d.harnessRoot, plan.id, runId);
-  await wt.create();
-  d.log.info(`Worktree created at ${wt.path} on branch ${wt.branch}`);
-
-  // ─── Install dependencies ─────────────────────────────────────
-  d.log.info("Installing dependencies in worktree");
-  const installResult = await d.runCommand("npm", ["ci"], {
-    cwd: wt.path,
-    timeoutMs: 5 * 60 * 1000,
+  // ─── Resolve plan-run isolation config ────────────────────────
+  // Plan mode runs every task inside ONE shared IsolationBackend so
+  // commits accumulate on a single branch (matching today's
+  // single-shared-worktree behaviour). Per-task isolation overrides
+  // are NOT honored in plan mode — they're meaningful for single-task
+  // `athanor run` invocations only. Warn if any task tries to override.
+  const isolationConfig = resolveIsolationConfig({
+    app: appDefaults.isolation,
+    plan: plan.isolation,
   });
-  if (installResult.exitCode !== 0) {
-    d.log.error(`npm ci failed:\n${installResult.stderr}`);
-    return false;
-  }
-  d.log.info("Dependencies installed");
+  d.log.info(`Isolation backend: ${isolationConfig.backend}`);
 
-  // ─── Outer task loop ──────────────────────────────────────────
-  // Build the initial completed tasks context from pre-existing completed tasks
-  const completedSoFar: CompletedTask[] = [...completedTasksFile.tasks];
+  // ─── Create the shared IsolationBackend ───────────────────────
+  const runId = d.makeRunId();
+  const isolation = await d.createIsolationBackend(isolationConfig, {
+    targetRepoRoot: d.targetRepoRoot,
+    harnessRoot: d.harnessRoot,
+    identifier: plan.id,
+    runId,
+  });
 
-  for (let i = crossRef.resumeIndex; i < planTaskIds.length; i++) {
-    const taskId = planTaskIds[i];
-    const taskFile = taskFiles.find((f) => f.replace(/\.yaml$/, "") === taskId);
-    if (!taskFile) {
-      d.log.error(`Task file not found for ${taskId} in ${tasksDir}`);
+  let pushSucceeded = false;
+  try {
+    await isolation.create();
+    d.log.info(`Worktree created at ${isolation.path} on branch ${isolation.branch}`);
+
+    // ─── Install dependencies ───────────────────────────────────
+    d.log.info("Installing dependencies in worktree");
+    const installResult = await isolation.runCommand("npm", ["ci"], {
+      timeoutMs: 5 * 60 * 1000,
+    });
+    if (installResult.exitCode !== 0) {
+      d.log.error(`npm ci failed:\n${installResult.stderr}`);
       return false;
     }
+    d.log.info("Dependencies installed");
 
-    const taskPath = resolve(tasksDir, taskFile);
-    let task = await d.loadTaskSpec(taskPath, d.targetRepoRoot);
-    task = mergeAppDevServer(task, appDefaults);
-
-    d.log.info(`Running task ${i + 1}/${planTaskIds.length}: ${task.id}`);
-
-    // Compute maxAttempts (3 if evaluator enabled, 2 otherwise)
-    const maxAttempts =
-      task.evaluator?.enabled && task.maxAgentAttempts === 2 ? 3 : task.maxAgentAttempts;
-
-    // Build completed tasks context
-    const completedTasksContext =
-      completedSoFar.length > 0 ? d.formatCompletedTasksContext([...completedSoFar]) : undefined;
-
-    // Wrap the shared host worktree in a WorktreeBackend so task-loop
-    // only sees the IsolationBackend seam. (Factory-driven dispatch
-    // lands in the run-plan-rewire commit.)
-    const isolation = new WorktreeBackend(wt);
+    // ─── Gate runner adapter ────────────────────────────────────
     const gateRunner: GateCommandRunner = async (command, _cwd, timeoutMs) => {
       const result = await isolation.runCommand("sh", ["-c", command], { timeoutMs });
       return {
@@ -251,49 +215,103 @@ export async function runPlanExecution(
       };
     };
 
-    // Run the inner retry loop
-    const loopResult = await d.runTaskLoop(
-      task,
-      { maxAttempts, completedTasks: completedTasksContext },
-      {
-        isolation,
-        runAllGates: (gates) => d.runAllGates(gates, isolation.path, gateRunner),
-        runEvaluator: d.runEvaluator,
-        log: d.log,
-      },
-    );
+    // ─── Outer task loop ────────────────────────────────────────
+    const completedSoFar: CompletedTask[] = [...completedTasksFile.tasks];
 
-    if (!loopResult.success) {
-      d.log.error(
-        `Task ${task.id} failed — halting plan execution. ` +
-          `Worktree left for human review at ${wt.path}.`,
+    for (let i = crossRef.resumeIndex; i < planTaskIds.length; i++) {
+      const taskId = planTaskIds[i];
+      const taskFile = taskFiles.find((f) => f.replace(/\.yaml$/, "") === taskId);
+      if (!taskFile) {
+        d.log.error(`Task file not found for ${taskId} in ${tasksDir}`);
+        return false;
+      }
+
+      const taskPath = resolve(tasksDir, taskFile);
+      let task = await d.loadTaskSpec(taskPath, d.targetRepoRoot);
+      task = mergeAppDevServer(task, appDefaults);
+
+      // Per-task isolation overrides are not honored in plan mode.
+      // Surface a warning rather than silently dropping the override.
+      if (task.isolation && task.isolation.backend !== isolationConfig.backend) {
+        d.log.warn(
+          `Task ${task.id} declares isolation.backend=${task.isolation.backend}, ` +
+            `but plan-mode uses one shared backend (${isolationConfig.backend}); ` +
+            `task-level override ignored. Use \`athanor run\` for per-task isolation.`,
+        );
+      }
+
+      d.log.info(`Running task ${i + 1}/${planTaskIds.length}: ${task.id}`);
+
+      // Compute maxAttempts (3 if evaluator enabled, 2 otherwise)
+      const maxAttempts =
+        task.evaluator?.enabled && task.maxAgentAttempts === 2 ? 3 : task.maxAgentAttempts;
+
+      // Build completed tasks context
+      const completedTasksContext =
+        completedSoFar.length > 0 ? d.formatCompletedTasksContext([...completedSoFar]) : undefined;
+
+      // Run the inner retry loop
+      const loopResult = await d.runTaskLoop(
+        task,
+        { maxAttempts, completedTasks: completedTasksContext },
+        {
+          isolation,
+          runAllGates: (gates) => d.runAllGates(gates, isolation.path, gateRunner),
+          runEvaluator: d.runEvaluator,
+          log: d.log,
+        },
       );
-      return false;
+
+      if (!loopResult.success) {
+        d.log.error(
+          `Task ${task.id} failed — halting plan execution. ` +
+            `Worktree left for human review at ${isolation.path}.`,
+        );
+        return false;
+      }
+
+      // Record completed task
+      const entry: CompletedTask = {
+        id: task.id,
+        title: task.title,
+        timestamp: new Date().toISOString(),
+        summary: loopResult.summary ?? `Completed task: ${task.title}`,
+      };
+      await d.appendCompletedTask(d.targetRepoRoot, entry);
+      completedSoFar.push(entry);
+
+      d.log.info(`Task ${task.id} completed successfully`);
     }
 
-    // Record completed task
-    const entry: CompletedTask = {
-      id: task.id,
-      title: task.title,
-      timestamp: new Date().toISOString(),
-      summary: loopResult.summary ?? `Completed task: ${task.title}`,
-    };
-    await d.appendCompletedTask(d.targetRepoRoot, entry);
-    completedSoFar.push(entry);
+    // ─── Push if requested ──────────────────────────────────────
+    // Plan-level push: fires once at plan end, only when all tasks
+    // succeeded and the caller asked for it. There is no per-task push.
+    if (opts.push) {
+      try {
+        await isolation.push();
+        d.log.info(`Pushed branch ${isolation.branch}`);
+        pushSucceeded = true;
+      } catch (e) {
+        d.log.warn(`Push failed (maybe no remote configured): ${String(e)}`);
+      }
+    }
 
-    d.log.info(`Task ${task.id} completed successfully`);
-  }
-
-  // ─── Push if requested ────────────────────────────────────────
-  if (opts.push) {
+    d.log.info("All plan tasks completed successfully");
+    return true;
+  } finally {
+    // Tear down isolation-specific runtime resources (e.g. sandcastle
+    // containers). For WorktreeBackend this is a no-op so the host
+    // worktree is preserved for inspection — see worktree-backend.ts.
     try {
-      await wt.push();
-      d.log.info(`Pushed branch ${wt.branch}`);
+      await isolation.destroy();
     } catch (e) {
-      d.log.warn(`Push failed (maybe no remote configured): ${String(e)}`);
+      d.log.warn(`Isolation destroy failed: ${String(e)}`);
+    }
+    if (opts.push && !pushSucceeded) {
+      // pushSucceeded is set above on the happy path; this branch
+      // executes when push was attempted but failed (we already
+      // logged the warn). No additional action needed here — the
+      // catch block above is the source of truth for the warning.
     }
   }
-
-  d.log.info("All plan tasks completed successfully");
-  return true;
 }
