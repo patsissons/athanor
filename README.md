@@ -200,6 +200,80 @@ Executes all tasks from a plan sequentially in a single worktree branch.
 
 **Resumption:** `.athanor/completed-tasks.yaml` tracks completed task IDs locally (never committed). On restart, the harness cross-references this file with git history — both must agree for a task to be considered complete. Any mismatch is a hard failure with a clear error message. This ensures safe resume after crashes or interruptions.
 
+## Agent isolation
+
+Every agent invocation and gate command runs through an
+`IsolationBackend` (see `src/isolation/`). Two backends ship today:
+
+- **`worktree`** (default). Commands run on the host with `cwd` pointing
+  at a fresh git worktree. No container is involved.
+- **`sandcastle`**. Commands run inside a Docker or Podman container
+  that bind-mounts the host worktree, via
+  [`@ai-hero/sandcastle`](https://www.npmjs.com/package/@ai-hero/sandcastle).
+  Commits made inside the container are visible to host git.
+
+Both backends present an identical surface to `task-loop.ts` and
+`orchestrator.ts`: the same `runAgent`, `runCommand`, `commitAll`,
+`push`, etc. methods. Switching is purely a configuration change. The
+`--dangerously-skip-permissions` flag is hardcoded inside
+`runClaudeCli` and is never surfaced as a config option, regardless of
+backend.
+
+### Configuring isolation
+
+The `isolation` field is optional on every spec layer
+(`AppSpec`, `PlanSpec`, `PlanTaskOverrides`, `TaskSpec`). The resolver
+picks the most-specific defined value:
+
+```
+task > plan-task override > plan > app > built-in default (worktree)
+```
+
+Schema:
+
+```yaml
+isolation:
+  backend: worktree
+# or
+isolation:
+  backend: sandcastle
+  provider: docker # or podman; defaults to docker
+  image: node:20 # optional; sandcastle picks a sensible default
+  copyToWorktree: # optional; relative paths copied into the worktree before the container starts
+    - .env.local
+```
+
+Worked example — opt one task into the sandcastle backend with a
+custom Docker image:
+
+```yaml
+# .athanor/tasks/<plan-id>/<task-id>.yaml
+id: containerised-build
+title: Build inside a Node 22 container
+description: |
+  ...
+isolation:
+  backend: sandcastle
+  provider: docker
+  image: node:22
+allowedPaths:
+  - "src/**"
+acceptanceCriteria:
+  - "Build passes inside the container"
+gates:
+  - name: typecheck
+    command: "npm run typecheck"
+```
+
+In **plan mode** (`athanor run-plan`), the plan resolves a single
+shared backend at plan-start (using the app- and plan-level layers
+only) so commits accumulate on one branch across the plan's tasks.
+Per-task overrides in plan mode produce a warning and are ignored —
+use `athanor run` against a single task spec for per-task isolation.
+
+The Docker and Podman providers ship today; sandcastle's Vercel and
+other isolated providers are not yet supported.
+
 ## Modules
 
 | File                       | Purpose                                                               |
