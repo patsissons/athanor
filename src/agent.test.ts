@@ -2,7 +2,16 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { PassThrough } from "node:stream";
 import { existsSync, readFileSync } from "node:fs";
 import { execa } from "execa";
-import { extractSummary, prettyPrintEvent, summarizeToolInput, invokeClaudeCode } from "./agent.js";
+import {
+  extractSummary,
+  prettyPrintEvent,
+  summarizeToolInput,
+  invokeClaudeCode,
+  buildClaudeArgs,
+  runClaudeCli,
+  type ClaudeExec,
+  type ClaudeExecOpts,
+} from "./agent.js";
 
 vi.mock("execa", () => ({ execa: vi.fn() }));
 
@@ -175,6 +184,150 @@ function makeFakeChild(opts: FakeChildOpts) {
   );
   return Object.assign(childPromise, { stdout }) as unknown;
 }
+
+describe("buildClaudeArgs", () => {
+  it("returns the expected positional and flag args without mcpConfigPath", () => {
+    const args = buildClaudeArgs({ prompt: "do the thing", model: "sonnet" });
+    expect(args).toEqual([
+      "--print",
+      "--model",
+      "sonnet",
+      "--dangerously-skip-permissions",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "do the thing",
+    ]);
+  });
+
+  it("includes --mcp-config and --strict-mcp-config when mcpConfigPath is supplied", () => {
+    const args = buildClaudeArgs({
+      prompt: "p",
+      model: "opus",
+      mcpConfigPath: "/tmp/mcp.json",
+    });
+    expect(args).toContain("--mcp-config");
+    expect(args[args.indexOf("--mcp-config") + 1]).toBe("/tmp/mcp.json");
+    expect(args).toContain("--strict-mcp-config");
+  });
+
+  it("always hardcodes --dangerously-skip-permissions", () => {
+    expect(buildClaudeArgs({ prompt: "x", model: "sonnet" })).toContain(
+      "--dangerously-skip-permissions",
+    );
+    expect(buildClaudeArgs({ prompt: "x", model: "haiku", mcpConfigPath: "/p" })).toContain(
+      "--dangerously-skip-permissions",
+    );
+  });
+
+  it("places the prompt as the final positional arg", () => {
+    const args = buildClaudeArgs({ prompt: "the prompt", model: "sonnet" });
+    expect(args[args.length - 1]).toBe("the prompt");
+  });
+
+  it("threads the model into the --model flag", () => {
+    const args = buildClaudeArgs({ prompt: "x", model: "opus" });
+    expect(args[args.indexOf("--model") + 1]).toBe("opus");
+  });
+});
+
+describe("runClaudeCli", () => {
+  function makeFakeExec(opts: {
+    exitCode: number | null;
+    events?: object[];
+    stdout?: string;
+    stderr?: string;
+  }): {
+    exec: ClaudeExec;
+    calls: Array<{ command: string; args: string[]; opts: ClaudeExecOpts }>;
+  } {
+    const calls: Array<{ command: string; args: string[]; opts: ClaudeExecOpts }> = [];
+    const exec: ClaudeExec = async (command, args, execOpts) => {
+      calls.push({ command, args, opts: execOpts });
+      if (opts.events && execOpts.stdoutLine) {
+        for (const evt of opts.events) {
+          execOpts.stdoutLine(JSON.stringify(evt));
+        }
+      }
+      return {
+        exitCode: opts.exitCode,
+        stdout: opts.stdout ?? "",
+        stderr: opts.stderr ?? "",
+      };
+    };
+    return { exec, calls };
+  }
+
+  it("forwards stdoutLine and stdinIgnore: true to the injected exec", async () => {
+    const { exec, calls } = makeFakeExec({ exitCode: 0 });
+    await runClaudeCli({ args: ["--foo"], exec, timeoutSeconds: 30 });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].opts.stdoutLine).toBeTypeOf("function");
+    expect(calls[0].opts.stdinIgnore).toBe(true);
+  });
+
+  it("converts timeoutSeconds to timeoutMs (×1000) for exec", async () => {
+    const { exec, calls } = makeFakeExec({ exitCode: 0 });
+    await runClaudeCli({ args: ["--foo"], exec, timeoutSeconds: 42 });
+    expect(calls[0].opts.timeoutMs).toBe(42_000);
+  });
+
+  it("defaults timeoutSeconds to 600 when omitted", async () => {
+    const { exec, calls } = makeFakeExec({ exitCode: 0 });
+    await runClaudeCli({ args: ["--foo"], exec });
+    expect(calls[0].opts.timeoutMs).toBe(600_000);
+  });
+
+  it("returns success=true when the exec result exitCode is 0", async () => {
+    const { exec } = makeFakeExec({
+      exitCode: 0,
+      events: [{ type: "result", result: "ok", num_turns: 1, duration_ms: 5 }],
+    });
+    const result = await runClaudeCli({ args: [], exec });
+    expect(result.success).toBe(true);
+  });
+
+  it("returns success=false on a non-zero exitCode", async () => {
+    const { exec } = makeFakeExec({ exitCode: 1 });
+    const result = await runClaudeCli({ args: [], exec });
+    expect(result.success).toBe(false);
+  });
+
+  it("returns success=false on a null exitCode (signal-killed)", async () => {
+    const { exec } = makeFakeExec({ exitCode: null });
+    const result = await runClaudeCli({ args: [], exec });
+    expect(result.success).toBe(false);
+  });
+
+  it("aggregates result text from a stream-json result event into AgentResult", async () => {
+    const { exec } = makeFakeExec({
+      exitCode: 0,
+      events: [
+        { type: "system", subtype: "init", session_id: "s1" },
+        {
+          type: "result",
+          result: "all done <task-summary>shipped</task-summary>",
+          num_turns: 3,
+          duration_ms: 100,
+        },
+      ],
+    });
+    const result = await runClaudeCli({ args: [], exec });
+    expect(result.parsed).toEqual({
+      result: "all done <task-summary>shipped</task-summary>",
+    });
+    expect(result.summary).toBe("shipped");
+    expect(result.stdout).toBe("all done <task-summary>shipped</task-summary>");
+  });
+
+  it("falls back to exec stdout when no stream-json result event arrives", async () => {
+    const { exec } = makeFakeExec({ exitCode: 0, stdout: "raw passthrough" });
+    const result = await runClaudeCli({ args: [], exec });
+    expect(result.stdout).toBe("raw passthrough");
+    expect(result.parsed).toBeNull();
+    expect(result.summary).toBeUndefined();
+  });
+});
 
 describe("invokeClaudeCode", () => {
   it("returns success=true and parses the summary from the result event", async () => {

@@ -22,25 +22,21 @@ export interface AgentResult {
   summary?: string;
 }
 
-export async function invokeClaudeCode(opts: {
+/**
+ * Pure builder for the `claude` CLI argument array.
+ *
+ * `--dangerously-skip-permissions` is hardcoded here. Per the AGENTS.md
+ * invariant, the flag is never surfaced as a parameter, config option,
+ * or environment variable; it is part of the contract that calling
+ * runClaudeCli always means "run inside a disposable isolation."
+ */
+export function buildClaudeArgs(opts: {
   prompt: string;
-  cwd: string;
   model: string;
-  timeoutSeconds?: number;
-  mcpConfig?: McpConfig;
-}): Promise<AgentResult> {
-  const { prompt, cwd, model, timeoutSeconds = 600, mcpConfig } = opts;
-
-  let mcpConfigPath: string | undefined;
-  if (mcpConfig) {
-    mcpConfigPath = join(
-      tmpdir(),
-      `athanor-mcp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`,
-    );
-    await writeFile(mcpConfigPath, JSON.stringify(mcpConfig), "utf8");
-  }
-
-  const args = [
+  mcpConfigPath?: string;
+}): string[] {
+  const { prompt, model, mcpConfigPath } = opts;
+  return [
     "--print",
     "--model",
     model,
@@ -51,45 +47,64 @@ export async function invokeClaudeCode(opts: {
     ...(mcpConfigPath ? ["--mcp-config", mcpConfigPath, "--strict-mcp-config"] : []),
     prompt,
   ];
+}
 
-  const child = execa("claude", args, {
-    cwd,
-    reject: false,
-    timeout: timeoutSeconds * 1000,
-    buffer: true,
-    stdin: "ignore",
-  });
+/**
+ * Result shape returned by the injected `exec` adapter.
+ * exitCode may be null when the child was signal-killed or otherwise
+ * terminated without a numeric exit; runClaudeCli treats anything
+ * other than 0 (including null) as failure.
+ */
+export interface ClaudeExecResult {
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+}
 
-  // Collect the result text from the final stream event while printing
-  // all events to the console in real time.
+export interface ClaudeExecOpts {
+  /** Called for each line of stdout as it streams in. Required for
+   *  stream-json parsing — without it, runClaudeCli's AgentResult will
+   *  have no parsed fields. */
+  stdoutLine?: (line: string) => void;
+  /** When true, the child's stdin is closed. */
+  stdinIgnore?: true;
+  timeoutMs: number;
+}
+
+export type ClaudeExec = (
+  command: string,
+  args: string[],
+  opts: ClaudeExecOpts,
+) => Promise<ClaudeExecResult>;
+
+/**
+ * Run the `claude` CLI through an injected `exec` adapter and
+ * aggregate its stream-json output into an AgentResult.
+ *
+ * `mcpConfigPath` is treated as read-only — runClaudeCli does NOT
+ * write or unlink the file at that path. Tempfile creation and
+ * cleanup are owned exclusively by callers (today: invokeClaudeCode;
+ * later: each isolation backend's runAgent).
+ */
+export async function runClaudeCli(opts: {
+  args: string[];
+  exec: ClaudeExec;
+  timeoutSeconds?: number;
+}): Promise<AgentResult> {
+  const { args, exec, timeoutSeconds = 600 } = opts;
+
   let resultText: string | undefined;
 
-  if (child.stdout) {
-    let buf = "";
-    child.stdout.on("data", (chunk: Buffer) => {
-      buf += chunk.toString();
-      let nl: number;
-      while ((nl = buf.indexOf("\n")) !== -1) {
-        const line = buf.slice(0, nl);
-        buf = buf.slice(nl + 1);
-        const collected = prettyPrintEvent(line);
-        if (collected) {
-          resultText = collected.resultText;
-        }
+  const result = await exec("claude", args, {
+    timeoutMs: timeoutSeconds * 1000,
+    stdinIgnore: true,
+    stdoutLine: (line) => {
+      const collected = prettyPrintEvent(line);
+      if (collected) {
+        resultText = collected.resultText;
       }
-    });
-  }
-
-  const result = await child;
-
-  // Clean up temp MCP config file
-  if (mcpConfigPath) {
-    try {
-      await unlink(mcpConfigPath);
-    } catch {
-      // Best-effort cleanup
-    }
-  }
+    },
+  });
 
   const summary = extractSummary(resultText);
 
@@ -100,6 +115,75 @@ export async function invokeClaudeCode(opts: {
     parsed: resultText ? { result: resultText } : null,
     summary,
   };
+}
+
+/**
+ * Default execa-backed exec adapter. Used by invokeClaudeCode for the
+ * host-cwd path; isolation backends supply their own adapter (e.g.
+ * SandcastleBackend wraps sandcastle.exec).
+ */
+export function execaClaudeExec(cwd: string): ClaudeExec {
+  return async (command, args, opts) => {
+    const child = execa(command, args, {
+      cwd,
+      reject: false,
+      timeout: opts.timeoutMs,
+      buffer: true,
+      stdin: opts.stdinIgnore ? "ignore" : "inherit",
+    });
+
+    if (opts.stdoutLine && child.stdout) {
+      let buf = "";
+      child.stdout.on("data", (chunk: Buffer) => {
+        buf += chunk.toString();
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) !== -1) {
+          const line = buf.slice(0, nl);
+          buf = buf.slice(nl + 1);
+          opts.stdoutLine!(line);
+        }
+      });
+    }
+
+    const result = await child;
+    return {
+      exitCode: result.exitCode ?? null,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    };
+  };
+}
+
+export async function invokeClaudeCode(opts: {
+  prompt: string;
+  cwd: string;
+  model: string;
+  timeoutSeconds?: number;
+  mcpConfig?: McpConfig;
+}): Promise<AgentResult> {
+  const { prompt, cwd, model, timeoutSeconds, mcpConfig } = opts;
+
+  let mcpConfigPath: string | undefined;
+  if (mcpConfig) {
+    mcpConfigPath = join(
+      tmpdir(),
+      `athanor-mcp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`,
+    );
+    await writeFile(mcpConfigPath, JSON.stringify(mcpConfig), "utf8");
+  }
+
+  try {
+    const args = buildClaudeArgs({ prompt, model, mcpConfigPath });
+    return await runClaudeCli({ args, exec: execaClaudeExec(cwd), timeoutSeconds });
+  } finally {
+    if (mcpConfigPath) {
+      try {
+        await unlink(mcpConfigPath);
+      } catch {
+        // Best-effort cleanup
+      }
+    }
+  }
 }
 
 export function extractSummary(resultText: string | undefined): string | undefined {
