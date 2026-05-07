@@ -88,4 +88,50 @@ describe("PlanSpecSchema", () => {
       }),
     ).toThrow();
   });
+
+  it("accepts a plan-level isolation config", () => {
+    const plan = PlanSpecSchema.parse({
+      ...minimalPlan,
+      isolation: { backend: "sandcastle", provider: "docker" },
+    });
+    expect(plan.isolation?.backend).toBe("sandcastle");
+  });
+
+  it("accepts a per-task isolation override inside a plan", () => {
+    const plan = PlanSpecSchema.parse({
+      id: "p",
+      tasks: [
+        {
+          id: "t",
+          description: "d",
+          overrides: { isolation: { backend: "sandcastle" } },
+        },
+      ],
+    });
+    expect(plan.tasks[0].overrides?.isolation?.backend).toBe("sandcastle");
+  });
+
+  it("rejects an unknown isolation backend at plan level", () => {
+    expect(() => PlanSpecSchema.parse({ ...minimalPlan, isolation: { backend: "vm" } })).toThrow();
+  });
+
+  it("rejects an unknown isolation backend in plan-task overrides", () => {
+    expect(() =>
+      PlanSpecSchema.parse({
+        id: "p",
+        tasks: [
+          {
+            id: "t",
+            description: "d",
+            overrides: { isolation: { backend: "vm" } },
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it("treats plan-level isolation as optional", () => {
+    const plan = PlanSpecSchema.parse(minimalPlan);
+    expect(plan.isolation).toBeUndefined();
+  });
 });

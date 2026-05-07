@@ -4,6 +4,7 @@ import { z } from "zod";
 import { resolve } from "node:path";
 import { loadDefaults } from "./load-defaults.js";
 import { EvaluatorConfigBaseSchema } from "./eval-spec.js";
+import { IsolationConfigSchema } from "./isolation/index.js";
 
 export const ValidationGateSchema = z.object({
   name: z.string(),
@@ -45,6 +46,11 @@ export const TaskSpecSchema = z.object({
   // Uses base schema (no refinement) so interactive mode can omit devServer
   // at parse time — app-level devServer is merged before execution.
   evaluator: EvaluatorConfigBaseSchema.optional(),
+
+  // Isolation backend selection. Optional — when omitted, the resolver
+  // falls back through plan-task / plan / app layers, defaulting to
+  // { backend: "worktree" } if every layer is undefined.
+  isolation: IsolationConfigSchema.optional(),
 });
 
 export type ValidationGate = z.infer<typeof ValidationGateSchema>;
