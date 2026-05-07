@@ -90,10 +90,13 @@ describe("createIsolationBackend", () => {
     runId: "20260506-000000-abcd",
   };
 
-  it("stub-throws for the worktree backend until implemented", async () => {
-    await expect(createIsolationBackend({ backend: "worktree" }, args)).rejects.toThrow(
-      /WorktreeBackend not yet implemented/,
-    );
+  it("returns a WorktreeBackend for the worktree config", async () => {
+    const backend = await createIsolationBackend({ backend: "worktree" }, args);
+    expect(backend).toBeDefined();
+    expect(typeof backend.create).toBe("function");
+    expect(typeof backend.runCommand).toBe("function");
+    expect(typeof backend.runAgent).toBe("function");
+    expect(typeof backend.destroy).toBe("function");
   });
 
   it("stub-throws for the sandcastle backend until implemented", async () => {

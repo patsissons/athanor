@@ -1,5 +1,7 @@
 import { z } from "zod";
 import type { McpConfig, AgentResult } from "../agent.js";
+import { Worktree } from "../worktree.js";
+import { WorktreeBackend } from "./worktree-backend.js";
 
 /**
  * Git-level operations on a worktree. Always satisfied by something
@@ -144,14 +146,19 @@ export interface IsolationBackendArgs {
 
 export async function createIsolationBackend(
   cfg: IsolationConfig,
-  // The args are unused while both cases throw; the parameter exists so
-  // the signature is stable for future implementations.
-
-  _args: IsolationBackendArgs,
+  args: IsolationBackendArgs,
 ): Promise<IsolationBackend> {
   switch (cfg.backend) {
-    case "worktree":
-      throw new Error("WorktreeBackend not yet implemented");
+    case "worktree": {
+      const wt = new Worktree(
+        args.targetRepoRoot,
+        args.harnessRoot,
+        args.identifier,
+        args.runId,
+        args.baseBranch,
+      );
+      return new WorktreeBackend(wt);
+    }
     case "sandcastle":
       throw new Error("SandcastleBackend not yet implemented");
     default: {
