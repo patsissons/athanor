@@ -8,12 +8,12 @@ import { loadAppDefaults } from "./plan-defaults.js";
 import type { AppSpec } from "./app-spec.js";
 import { mergeAppDevServer } from "./merge-dev-server.js";
 import type { EvalResult, EvaluatorConfig } from "./eval-spec.js";
-import type { GateResult } from "./gates.js";
+import type { GateResult, GateCommandRunner } from "./gates.js";
 import { runAllGates } from "./gates.js";
 import { invokeClaudeCode } from "./agent.js";
-import { runEvaluator } from "./evaluator.js";
 import { Worktree, makeRunId } from "./worktree.js";
-import { runTaskLoop, type TaskLoopResult } from "./task-loop.js";
+import { runTaskLoop } from "./task-loop.js";
+import { WorktreeBackend } from "./isolation/worktree-backend.js";
 import {
   loadCompletedTasks,
   appendCompletedTask,
@@ -47,37 +47,17 @@ export interface RunPlanDeps {
     planTaskIds: string[],
   ): CrossReferenceResult;
   formatCompletedTasksContext(tasks: CompletedTask[]): string;
-  runTaskLoop(
-    task: TaskSpec,
-    opts: { maxAttempts: number; completedTasks?: string },
-    deps: {
-      invokeAgent(opts: {
-        prompt: string;
-        cwd: string;
-        model: string;
-      }): Promise<{ success: boolean; stderr: string; summary?: string }>;
-      runAllGates(gates: TaskSpec["gates"], cwd: string): Promise<GateResult[]>;
-      runEvaluator(opts: {
-        task: TaskSpec;
-        diff: string;
-        evaluator: EvaluatorConfig;
-        cwd: string;
-      }): Promise<EvalResult>;
-      runCommand(
-        command: string,
-        args: string[],
-        opts: { cwd: string; timeoutMs: number },
-      ): Promise<CommandResult>;
-      worktree: WorktreeLike;
-      log: RunTaskLogger;
-    },
-  ): Promise<TaskLoopResult>;
+  runTaskLoop: typeof runTaskLoop;
   invokeAgent(opts: {
     prompt: string;
     cwd: string;
     model: string;
   }): Promise<{ success: boolean; stderr: string; summary?: string }>;
-  runAllGates(gates: TaskSpec["gates"], cwd: string): Promise<GateResult[]>;
+  runAllGates(
+    gates: TaskSpec["gates"],
+    cwd: string,
+    runCommand?: GateCommandRunner,
+  ): Promise<GateResult[]>;
   runEvaluator(opts: {
     task: TaskSpec;
     diff: string;
@@ -259,16 +239,26 @@ export async function runPlanExecution(
     const completedTasksContext =
       completedSoFar.length > 0 ? d.formatCompletedTasksContext([...completedSoFar]) : undefined;
 
+    // Wrap the shared host worktree in a WorktreeBackend so task-loop
+    // only sees the IsolationBackend seam. (Factory-driven dispatch
+    // lands in the run-plan-rewire commit.)
+    const isolation = new WorktreeBackend(wt);
+    const gateRunner: GateCommandRunner = async (command, _cwd, timeoutMs) => {
+      const result = await isolation.runCommand("sh", ["-c", command], { timeoutMs });
+      return {
+        exitCode: result.exitCode,
+        output: result.stdout + result.stderr,
+      };
+    };
+
     // Run the inner retry loop
     const loopResult = await d.runTaskLoop(
       task,
       { maxAttempts, completedTasks: completedTasksContext },
       {
-        invokeAgent: d.invokeAgent,
-        runAllGates: d.runAllGates,
+        isolation,
+        runAllGates: (gates) => d.runAllGates(gates, isolation.path, gateRunner),
         runEvaluator: d.runEvaluator,
-        runCommand: d.runCommand,
-        worktree: wt,
         log: d.log,
       },
     );

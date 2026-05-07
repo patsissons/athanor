@@ -5,7 +5,8 @@ import { summarize } from "./gates.js";
 import { formatEvalFeedback } from "./evaluator.js";
 import { buildPrompt } from "./prompt.js";
 import { evaluatePathPolicy } from "./path-policy.js";
-import type { WorktreeLike, CommandResult, RunTaskLogger } from "./orchestrator.js";
+import type { RunTaskLogger } from "./orchestrator.js";
+import type { IsolationBackend } from "./isolation/index.js";
 
 export interface TaskLoopResult {
   success: boolean;
@@ -13,24 +14,18 @@ export interface TaskLoopResult {
 }
 
 export interface TaskLoopDeps {
-  invokeAgent(opts: {
-    prompt: string;
-    cwd: string;
-    model: string;
-  }): Promise<{ success: boolean; stderr: string; summary?: string }>;
-  runAllGates(gates: TaskSpec["gates"], cwd: string): Promise<GateResult[]>;
+  /** The isolation backend that runs the agent + commands and exposes
+   *  the host-side worktree passthrough (changedFiles/diff/commitAll). */
+  isolation: IsolationBackend;
+  /** Gates run inside the isolation (orchestrator/run-plan bind a runner
+   *  that delegates to isolation.runCommand). */
+  runAllGates(gates: TaskSpec["gates"]): Promise<GateResult[]>;
   runEvaluator(opts: {
     task: TaskSpec;
     diff: string;
     evaluator: EvaluatorConfig;
     cwd: string;
   }): Promise<EvalResult>;
-  runCommand(
-    command: string,
-    args: string[],
-    opts: { cwd: string; timeoutMs: number },
-  ): Promise<CommandResult>;
-  worktree: WorktreeLike;
   log: RunTaskLogger;
 }
 
@@ -42,7 +37,7 @@ export async function runTaskLoop(
   },
   deps: TaskLoopDeps,
 ): Promise<TaskLoopResult> {
-  const { worktree: wt, log: logger } = deps;
+  const { isolation, log: logger } = deps;
   let priorFailure: string | null = null;
   let lastSummary: string | undefined;
 
@@ -55,9 +50,8 @@ export async function runTaskLoop(
       priorFailure,
       completedTasks: opts.completedTasks,
     });
-    const agentResult = await deps.invokeAgent({
+    const agentResult = await isolation.runAgent({
       prompt,
-      cwd: wt.path,
       model: task.model,
     });
     if (!agentResult.success) {
@@ -69,16 +63,18 @@ export async function runTaskLoop(
 
     // ─── DETERMINISTIC NODE: auto-format ─────────────────────────
     logger.debug("Running Prettier");
-    const fmtResult = await deps.runCommand("npm", ["run", "format"], {
-      cwd: wt.path,
+    const fmtResult = await isolation.runCommand("npm", ["run", "format"], {
       timeoutMs: 60 * 1000,
     });
+    // exitCode is `number | null` after the IsolationBackend rewire;
+    // `null !== 0` is `true`, so a signal-killed format command still
+    // counts as a failure here without an extra null guard.
     if (fmtResult.exitCode !== 0) {
       logger.warn(`Prettier failed: ${fmtResult.stderr}`);
     }
 
     // ─── DETERMINISTIC NODE: path policy check ───────────────────
-    const changed = await wt.changedFiles();
+    const changed = await isolation.changedFiles();
     const pathPolicy = evaluatePathPolicy(changed, task.allowedPaths, task.forbiddenPaths);
     if (!pathPolicy.ok) {
       priorFailure = pathPolicy.message;
@@ -88,7 +84,7 @@ export async function runTaskLoop(
 
     // ─── DETERMINISTIC NODE: run gates ───────────────────────────
     logger.info("Running validation gates");
-    const results = await deps.runAllGates(task.gates, wt.path);
+    const results = await deps.runAllGates(task.gates);
     results.forEach((r) => logger.debug(summarize(r)));
 
     const failed = results.filter((r) => !r.passed);
@@ -108,7 +104,7 @@ export async function runTaskLoop(
 
     if (task.evaluator?.enabled) {
       logger.info(`Running evaluator (${task.evaluator.model})`);
-      const diffText = await wt.diff();
+      const diffText = await isolation.diff();
 
       let evalResult: EvalResult;
 
@@ -118,7 +114,7 @@ export async function runTaskLoop(
           task,
           diff: diffText,
           evaluator: task.evaluator,
-          cwd: wt.path,
+          cwd: isolation.path,
         });
 
         // If dev server failed to start, fall back to diff-review
@@ -130,7 +126,7 @@ export async function runTaskLoop(
             task,
             diff: diffText,
             evaluator: { ...task.evaluator, mode: "diff-review" },
-            cwd: wt.path,
+            cwd: isolation.path,
           });
         }
       } else {
@@ -138,7 +134,7 @@ export async function runTaskLoop(
           task,
           diff: diffText,
           evaluator: task.evaluator,
-          cwd: wt.path,
+          cwd: isolation.path,
         });
       }
 
@@ -167,14 +163,14 @@ export async function runTaskLoop(
     }
 
     // ─── DETERMINISTIC NODE: commit all changes ─────────────────
-    await wt.commitAll(`${task.title}\n\nTask: ${task.id}`);
+    await isolation.commitAll(`${task.title}\n\nTask: ${task.id}`);
 
     return { success: true, summary: lastSummary };
   }
 
   logger.warn(
     `Task ${task.id} did not pass after ${opts.maxAttempts} attempts. ` +
-      `Worktree left for human review at ${wt.path}.`,
+      `Worktree left for human review at ${isolation.path}.`,
   );
   return { success: false, summary: lastSummary };
 }

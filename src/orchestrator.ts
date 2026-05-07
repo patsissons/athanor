@@ -7,7 +7,9 @@ import { invokeClaudeCode } from "./agent.js";
 import { runEvaluator } from "./evaluator.js";
 import { log } from "./logger.js";
 import { runTaskLoop } from "./task-loop.js";
-import type { WorktreeLike } from "./isolation/index.js";
+import type { WorktreeLike, IsolationBackend } from "./isolation/index.js";
+import { WorktreeBackend } from "./isolation/worktree-backend.js";
+import type { GateCommandRunner } from "./gates.js";
 
 // Re-exported for backwards compatibility with callers that import
 // WorktreeLike from "./orchestrator.js". The canonical definition
@@ -45,7 +47,16 @@ export interface RunTaskDeps {
     cwd: string;
     model: string;
   }): Promise<{ success: boolean; stderr: string; summary?: string }>;
-  runAllGates(gates: TaskSpec["gates"], cwd: string): Promise<GateResult[]>;
+  runAllGates(
+    gates: TaskSpec["gates"],
+    cwd: string,
+    runCommand?: GateCommandRunner,
+  ): Promise<GateResult[]>;
+  /** Construct the IsolationBackend that wraps the given worktree.
+   *  Default: `(wt) => new WorktreeBackend(wt)`. Tests override this
+   *  to inject a spy-able backend; the factory-driven dispatch on
+   *  `task.isolation` lands in the orchestrator-rewire commit. */
+  createIsolation?(wt: WorktreeLike): IsolationBackend;
   runEvaluator(opts: {
     task: TaskSpec;
     diff: string;
@@ -68,6 +79,10 @@ function createDefaultWorktree(
   baseBranch?: string,
 ): WorktreeLike {
   return new Worktree(targetRepoRoot, harnessRoot, identifier, runId, baseBranch);
+}
+
+function defaultCreateIsolation(wt: WorktreeLike): IsolationBackend {
+  return new WorktreeBackend(wt);
 }
 
 async function runSubprocess(
@@ -132,10 +147,15 @@ export async function runTask(
   await wt.create();
   runtime.log.debug(`Worktree created at ${wt.path} on branch ${wt.branch}`);
 
+  // Wrap the host worktree in an IsolationBackend so task-loop only
+  // sees the new seam. The factory-driven dispatch on task.isolation
+  // arrives in the orchestrator-rewire commit; this commit shims to
+  // the new shape with a default WorktreeBackend wrapping.
+  const isolation = (runtime.createIsolation ?? defaultCreateIsolation)(wt);
+
   // ─── DETERMINISTIC NODE: warm the worktree ──────────────────
   runtime.log.debug("Installing dependencies in worktree");
-  const installResult = await runtime.runCommand("npm", ["install"], {
-    cwd: wt.path,
+  const installResult = await isolation.runCommand("npm", ["install"], {
     timeoutMs: 5 * 60 * 1000,
   });
   if (installResult.exitCode !== 0) {
@@ -145,15 +165,21 @@ export async function runTask(
   runtime.log.debug("Dependencies installed");
 
   // ─── TASK LOOP: delegate to the shared retry loop ─────────────
+  const gateRunner: GateCommandRunner = async (command, _cwd, timeoutMs) => {
+    const result = await isolation.runCommand("sh", ["-c", command], { timeoutMs });
+    return {
+      exitCode: result.exitCode,
+      output: result.stdout + result.stderr,
+    };
+  };
+
   const loopResult = await runTaskLoop(
     task,
     { maxAttempts },
     {
-      invokeAgent: runtime.invokeAgent,
-      runAllGates: runtime.runAllGates,
+      isolation,
+      runAllGates: (gates) => runtime.runAllGates(gates, isolation.path, gateRunner),
       runEvaluator: runtime.runEvaluator,
-      runCommand: runtime.runCommand,
-      worktree: wt,
       log: runtime.log,
     },
   );

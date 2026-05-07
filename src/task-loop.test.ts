@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { runTaskLoop, type TaskLoopDeps } from "./task-loop.js";
 import { TaskSpecSchema, type TaskSpec } from "./task-spec.js";
-import type { CommandResult, RunTaskLogger, WorktreeLike } from "./orchestrator.js";
+import type { RunTaskLogger } from "./orchestrator.js";
+import type { IsolationBackend } from "./isolation/index.js";
 
 function makeTask(overrides: Partial<TaskSpec> = {}): TaskSpec {
   return TaskSpecSchema.parse({
@@ -35,10 +36,22 @@ function makeLogger() {
   return { logger, messages };
 }
 
+interface AgentReturn {
+  success: boolean;
+  stderr: string;
+  summary?: string;
+}
+
+interface CmdReturn {
+  exitCode: number | null;
+  stdout?: string;
+  stderr?: string;
+}
+
 function makeDeps(opts: {
   changedFiles?: string[][];
-  formatResults?: CommandResult[];
-  agentResults?: { success: boolean; stderr: string; summary?: string }[];
+  formatResults?: CmdReturn[];
+  agentResults?: AgentReturn[];
   gateResults?: Array<
     {
       name: string;
@@ -61,8 +74,8 @@ function makeDeps(opts: {
 }) {
   const { logger, messages } = makeLogger();
   const changedFiles = [...(opts.changedFiles ?? [[]])];
-  const formatResults = [...(opts.formatResults ?? [{ exitCode: 0, stderr: "" }])];
-  const agentResults = [...(opts.agentResults ?? [{ success: true, stderr: "" }])];
+  const formatResults = [...(opts.formatResults ?? [{ exitCode: 0, stdout: "", stderr: "" }])];
+  const agentResults: AgentReturn[] = [...(opts.agentResults ?? [{ success: true, stderr: "" }])];
   const gateResults = [
     ...(opts.gateResults ?? [[{ name: "typecheck", passed: true, exitCode: 0, output: "" }]]),
   ];
@@ -70,7 +83,8 @@ function makeDeps(opts: {
     ...(opts.evalResults ?? [{ passed: true, issues: [], summary: "Approved." }]),
   ];
 
-  const worktree: WorktreeLike = {
+  // The IsolationBackend mock: passthrough surface + runAgent + runCommand.
+  const isolation = {
     branch: "athanor/demo/20260423-120000-abcd",
     path: "/tmp/wt",
     create: vi.fn().mockResolvedValue("/tmp/wt"),
@@ -79,12 +93,24 @@ function makeDeps(opts: {
     commitAll: vi.fn().mockResolvedValue(undefined),
     push: vi.fn().mockResolvedValue(undefined),
     destroy: vi.fn().mockResolvedValue(undefined),
-  };
+    runAgent: vi.fn().mockImplementation(async () => {
+      const r = agentResults.shift() ?? { success: true, stderr: "" };
+      return {
+        success: r.success,
+        stdout: "",
+        stderr: r.stderr,
+        parsed: null,
+        summary: r.summary,
+      };
+    }),
+    runCommand: vi.fn().mockImplementation(async () => {
+      const r = formatResults.shift() ?? { exitCode: 0, stderr: "" };
+      return { exitCode: r.exitCode, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+    }),
+  } satisfies IsolationBackend;
 
   const deps: TaskLoopDeps = {
-    invokeAgent: vi
-      .fn()
-      .mockImplementation(async () => agentResults.shift() ?? { success: true, stderr: "" }),
+    isolation,
     runAllGates: vi
       .fn()
       .mockImplementation(
@@ -96,25 +122,21 @@ function makeDeps(opts: {
       .mockImplementation(
         async () => evalResults.shift() ?? { passed: true, issues: [], summary: "Approved." },
       ),
-    runCommand: vi.fn().mockImplementation(async () => {
-      return formatResults.shift() ?? { exitCode: 0, stderr: "" };
-    }),
-    worktree,
     log: logger,
   };
 
-  return { deps, worktree, messages };
+  return { deps, isolation, messages };
 }
 
 describe("runTaskLoop", () => {
   it("succeeds on first attempt when everything passes", async () => {
-    const { deps, worktree } = makeDeps({});
+    const { deps, isolation } = makeDeps({});
 
     const result = await runTaskLoop(makeTask(), { maxAttempts: 2 }, deps);
 
     expect(result.success).toBe(true);
-    expect(deps.invokeAgent).toHaveBeenCalledTimes(1);
-    expect(worktree.commitAll).toHaveBeenCalledWith("Add demo page\n\nTask: demo");
+    expect(isolation.runAgent).toHaveBeenCalledTimes(1);
+    expect(isolation.commitAll).toHaveBeenCalledWith("Add demo page\n\nTask: demo");
   });
 
   it("aborts when agent invocation fails", async () => {
@@ -128,7 +150,7 @@ describe("runTaskLoop", () => {
   });
 
   it("retries with focused feedback when path policy fails", async () => {
-    const { deps } = makeDeps({
+    const { deps, isolation } = makeDeps({
       changedFiles: [["package.json"], ["src/page.tsx"]],
       gateResults: [[{ name: "typecheck", passed: true, exitCode: 0, output: "" }]],
       agentResults: [
@@ -140,13 +162,13 @@ describe("runTaskLoop", () => {
     const result = await runTaskLoop(makeTask(), { maxAttempts: 2 }, deps);
 
     expect(result.success).toBe(true);
-    expect(deps.invokeAgent).toHaveBeenCalledTimes(2);
-    const secondPrompt = vi.mocked(deps.invokeAgent).mock.calls[1]?.[0].prompt;
+    expect(isolation.runAgent).toHaveBeenCalledTimes(2);
+    const secondPrompt = vi.mocked(isolation.runAgent).mock.calls[1]?.[0].prompt;
     expect(secondPrompt).toContain("Agent modified forbidden files");
   });
 
   it("retries with gate output when a gate fails", async () => {
-    const { deps } = makeDeps({
+    const { deps, isolation } = makeDeps({
       gateResults: [
         [{ name: "typecheck", passed: false, exitCode: 1, output: "bad types" }],
         [{ name: "typecheck", passed: true, exitCode: 0, output: "" }],
@@ -160,22 +182,22 @@ describe("runTaskLoop", () => {
     const result = await runTaskLoop(makeTask(), { maxAttempts: 2 }, deps);
 
     expect(result.success).toBe(true);
-    const secondPrompt = vi.mocked(deps.invokeAgent).mock.calls[1]?.[0].prompt;
+    const secondPrompt = vi.mocked(isolation.runAgent).mock.calls[1]?.[0].prompt;
     expect(secondPrompt).toContain("=== typecheck (exit 1) ===");
     expect(secondPrompt).toContain("bad types");
   });
 
   it("commits on success", async () => {
-    const { deps, worktree } = makeDeps({});
+    const { deps, isolation } = makeDeps({});
 
     const result = await runTaskLoop(makeTask(), { maxAttempts: 2 }, deps);
 
     expect(result.success).toBe(true);
-    expect(worktree.commitAll).toHaveBeenCalledWith("Add demo page\n\nTask: demo");
+    expect(isolation.commitAll).toHaveBeenCalledWith("Add demo page\n\nTask: demo");
   });
 
   it("does not commit after exhausting attempts", async () => {
-    const { deps, worktree } = makeDeps({
+    const { deps, isolation } = makeDeps({
       gateResults: [
         [{ name: "typecheck", passed: false, exitCode: 1, output: "bad types" }],
         [{ name: "typecheck", passed: false, exitCode: 1, output: "still bad" }],
@@ -189,7 +211,7 @@ describe("runTaskLoop", () => {
     const result = await runTaskLoop(makeTask(), { maxAttempts: 2 }, deps);
 
     expect(result.success).toBe(false);
-    expect(worktree.commitAll).not.toHaveBeenCalled();
+    expect(isolation.commitAll).not.toHaveBeenCalled();
   });
 
   it("skips evaluator when not configured", async () => {
@@ -202,7 +224,7 @@ describe("runTaskLoop", () => {
   });
 
   it("runs evaluator when enabled and commits after eval passes", async () => {
-    const { deps, worktree } = makeDeps({
+    const { deps, isolation } = makeDeps({
       evalResults: [{ passed: true, score: 90, issues: [], summary: "Approved." }],
     });
 
@@ -213,11 +235,11 @@ describe("runTaskLoop", () => {
 
     expect(result.success).toBe(true);
     expect(deps.runEvaluator).toHaveBeenCalledTimes(1);
-    expect(worktree.commitAll).toHaveBeenCalled();
+    expect(isolation.commitAll).toHaveBeenCalled();
   });
 
   it("retries with evaluator feedback when evaluator rejects", async () => {
-    const { deps } = makeDeps({
+    const { deps, isolation } = makeDeps({
       evalResults: [
         {
           passed: false,
@@ -251,14 +273,14 @@ describe("runTaskLoop", () => {
 
     expect(result.success).toBe(true);
     expect(deps.runEvaluator).toHaveBeenCalledTimes(2);
-    expect(deps.invokeAgent).toHaveBeenCalledTimes(2);
-    const secondPrompt = vi.mocked(deps.invokeAgent).mock.calls[1]?.[0].prompt;
+    expect(isolation.runAgent).toHaveBeenCalledTimes(2);
+    const secondPrompt = vi.mocked(isolation.runAgent).mock.calls[1]?.[0].prompt;
     expect(secondPrompt).toContain("Evaluator Review");
     expect(secondPrompt).toContain("Route handler is stubbed");
   });
 
   it("runs evaluator even when gates fail", async () => {
-    const { deps } = makeDeps({
+    const { deps, isolation } = makeDeps({
       gateResults: [
         [{ name: "typecheck", passed: false, exitCode: 1, output: "bad types" }],
         [{ name: "typecheck", passed: true, exitCode: 0, output: "" }],
@@ -280,12 +302,12 @@ describe("runTaskLoop", () => {
 
     expect(result.success).toBe(true);
     expect(deps.runEvaluator).toHaveBeenCalledTimes(2);
-    const secondPrompt = vi.mocked(deps.invokeAgent).mock.calls[1]?.[0].prompt;
+    const secondPrompt = vi.mocked(isolation.runAgent).mock.calls[1]?.[0].prompt;
     expect(secondPrompt).toContain("=== typecheck (exit 1) ===");
   });
 
   it("combines gate and evaluator failures in retry feedback", async () => {
-    const { deps } = makeDeps({
+    const { deps, isolation } = makeDeps({
       gateResults: [
         [{ name: "typecheck", passed: false, exitCode: 1, output: "bad types" }],
         [{ name: "typecheck", passed: true, exitCode: 0, output: "" }],
@@ -306,13 +328,13 @@ describe("runTaskLoop", () => {
     const result = await runTaskLoop(task, { maxAttempts: 2 }, deps);
 
     expect(result.success).toBe(true);
-    const secondPrompt = vi.mocked(deps.invokeAgent).mock.calls[1]?.[0].prompt;
+    const secondPrompt = vi.mocked(isolation.runAgent).mock.calls[1]?.[0].prompt;
     expect(secondPrompt).toContain("=== typecheck (exit 1) ===");
     expect(secondPrompt).toContain("Evaluator Review");
   });
 
   it("falls back to diff-review when interactive dev server fails to start", async () => {
-    const { deps, messages } = makeDeps({
+    const { deps, isolation, messages } = makeDeps({
       evalResults: [
         { passed: false, issues: [], summary: "Failed to start dev server: ENOENT" },
         { passed: true, score: 85, issues: [], summary: "Approved via diff-review." },
@@ -328,7 +350,7 @@ describe("runTaskLoop", () => {
     // Both calls are made within the same retry attempt — the fallback should
     // not consume an agent retry.
     expect(deps.runEvaluator).toHaveBeenCalledTimes(2);
-    expect(deps.invokeAgent).toHaveBeenCalledTimes(1);
+    expect(isolation.runAgent).toHaveBeenCalledTimes(1);
     const secondCallArgs = vi.mocked(deps.runEvaluator).mock.calls[1]?.[0];
     expect(secondCallArgs?.evaluator.mode).toBe("diff-review");
     // The mode switch is logged so it is not silent — important because the
@@ -337,7 +359,7 @@ describe("runTaskLoop", () => {
   });
 
   it("fails after exhausting attempts with evaluator rejections", async () => {
-    const { deps, worktree } = makeDeps({
+    const { deps, isolation } = makeDeps({
       evalResults: [
         { passed: false, issues: [], summary: "Not good enough." },
         { passed: false, issues: [], summary: "Still not good enough." },
@@ -361,11 +383,11 @@ describe("runTaskLoop", () => {
     const result = await runTaskLoop(task, { maxAttempts: 3 }, deps);
 
     expect(result.success).toBe(false);
-    expect(worktree.commitAll).not.toHaveBeenCalled();
+    expect(isolation.commitAll).not.toHaveBeenCalled();
   });
 
   it("injects completed tasks context into agent prompt", async () => {
-    const { deps } = makeDeps({});
+    const { deps, isolation } = makeDeps({});
 
     const result = await runTaskLoop(
       makeTask(),
@@ -377,18 +399,18 @@ describe("runTaskLoop", () => {
     );
 
     expect(result.success).toBe(true);
-    const firstPrompt = vi.mocked(deps.invokeAgent).mock.calls[0]?.[0].prompt;
+    const firstPrompt = vi.mocked(isolation.runAgent).mock.calls[0]?.[0].prompt;
     expect(firstPrompt).toContain("## Previously completed tasks");
     expect(firstPrompt).toContain("## prior-task: Prior Task");
   });
 
   it("omits completed tasks section when not provided", async () => {
-    const { deps } = makeDeps({});
+    const { deps, isolation } = makeDeps({});
 
     const result = await runTaskLoop(makeTask(), { maxAttempts: 2 }, deps);
 
     expect(result.success).toBe(true);
-    const firstPrompt = vi.mocked(deps.invokeAgent).mock.calls[0]?.[0].prompt;
+    const firstPrompt = vi.mocked(isolation.runAgent).mock.calls[0]?.[0].prompt;
     expect(firstPrompt).not.toContain("## Previously completed tasks");
   });
 
